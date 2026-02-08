@@ -2,179 +2,133 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Carcassonne Minimal Simulator (Base A–X)</title>
-  <link rel="stylesheet" href="style.css?v=369" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Carcassonne Online (Mobile)</title>
+  <link rel="stylesheet" href="style.css?v=391" />
 </head>
 <body>
-  <div id="app">
+  <div id="app" class="onlineOnly">
     <aside id="sidebar">
-      <h1>Carcassonne (Base A–X)</h1>
+      <h1>Carcassonne Online</h1>
 
-      <div class="tabs">
-        <button id="tabPlay" class="tab active" type="button">Play</button>
-        <button id="tabRefine" class="tab" type="button">Refine polygons</button>
-      </div>
-      <div id="playPane">
-
-
-      <section class="card">
-        <h2>Tile</h2>
-        <div class="row">
-          <label for="tileSelect">Select:</label>
-          <select id="tileSelect"></select>
-        </div>
-
-        <div class="row">
-          <button id="rotL" title="Rotate left">⟲</button>
-          <div id="rotLabel">Rotation: 0°</div>
-          <button id="rotR" title="Rotate right">⟳</button>
-        </div>
-
-        <div class="row">
-          <label class="chk"><input type="checkbox" id="useCounts" checked> Respect tile counts</label>
-        </div>
-
-        <div class="row">
-          <div id="tilePreview" class="tilePreview" title="Selected tile preview"></div>
-          <div class="hint" style="margin:0;">
-            Wheel over board rotates tile.<br/>
-            Arrow keys move board (hover board).<br/>
-            Hover empty cell shows ghost.
-          </div>
-        </div>
-
-        <div id="tilePalette" class="palette" aria-label="Tile palette"></div>
-
-        <div class="hint">
-          Place a tile by clicking an empty cell.<br/>
-          Right-click a tile to remove it (and attached meeples).<br/>
-          Click a placed tile to show meeple markers.
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>Meeples</h2>
-        <div class="row">
-          <button class="pbtn" id="p1btn">Player 1 (Blue)</button>
-          <button class="pbtn" id="p2btn">Player 2 (Red)</button>
-        </div>
-        <div class="row">
-          <label class="chk"><input type="checkbox" id="ignoreMeepleRule"> Ignore “feature already occupied” rule</label>
-        </div>
-        <div class="hint">
-          Click a placed tile to show feature markers, then click a marker to place a meeple
-          for the currently selected player.
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>Scoring</h2>
-        <div id="scoreBox"></div>
-        <div class="hint">
-          “Score” = points already awarded (completed features).<br/>
-          “End-if-now” = additional points if the game ended now (incomplete claimed features + farms).<br/>
-          “If-complete-now” = value if currently claimed roads/cities/cloisters were completed with their current extent.
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>Actions</h2>
-        <div class="row">
-          <button id="undoBtn">Undo</button>
-          <button id="resetBtn">Reset</button>
-        </div>
-        <div class="row">
-          <button id="exportBtn">Export JSON</button>
-          <button id="importBtn">Import JSON</button>
-        </div>
-        <input id="importFile" type="file" accept="application/json" hidden />
-      </section>
-
-      <section class="card">
-        <h2>Placement rules implemented</h2>
-        <ul class="small">
-          <li>Edge matching (road/city/field primary).</li>
-          <li>Road/City completion: all open edge-ports connected.</li>
-          <li>Cloister completion: 8 surrounding tiles.</li>
-          <li>Majority scoring; ties split full points.</li>
-          <li>Farms (end scoring): 3 per completed adjacent city (base rules).</li>
-        </ul>
-      </section>
-    
-      </div>
-
-      <div id="refinePane" class="hidden">
-        <section class="card">
-          <h2>Refine polygons (paint)</h2>
-          <div class="row">
-            <div class="mono" id="rpProgress">Loading…</div>
-          </div>
-
-          <div class="row">
-            <label class="small">Tile</label>
-            <select id="rpTileSelect"></select>
-            <label class="small">Area</label>
-            <select id="rpFeatureSelect"></select>
-          </div>
-
-          <div class="row">
-            <label class="small">New area type</label>
-            <select id="rpNewType">
-              <option value="field">field</option>
-              <option value="road">road</option>
-              <option value="city">city</option>
-              <option value="cloister">cloister</option>
-            </select>
-            <button id="rpAddFeature" type="button">Add area</button>
-            <button id="rpDeleteFeature" type="button">Delete area</button>
-          </div>
-
-          <div class="row">
-            <div class="small">Ports (edge segments)</div>
-          </div>
-          <div id="rpPorts" class="rpPorts"></div>
-
-
-          <div class="row">
-            <button id="rpPrev" type="button">Prev</button>
-            <button id="rpSkip" class="primary" type="button">Next (Enter)</button>
-          </div>
-
-          <div class="row">
-            <button id="rpResetToCurrent" type="button">Reset to current</button>
-            <button id="rpClear" type="button">Clear</button>
-          </div>
-
-          <div class="row">
-            <button id="rpExport" type="button">Export overrides</button>
-            <button id="rpImport" type="button">Import overrides</button>
-            <input id="rpImportFile" type="file" accept="application/json" hidden />
-          </div>
-
-          <div class="hint small">
-            Left = paint add, Right = erase, wheel = brush size. Holes are allowed. Ports define connectivity and can be edited above.
-          </div>
-
-          <div class="row small">Brush: <span class="mono" id="rpBrushLabel">—</span></div>
-          <div id="rpStage" class="rpStage"></div>
-          <div class="row small" style="margin-top:10px;">All areas (overview)</div>
-          <div id="rpStageAll" class="rpStage rpStageAll"></div>
+      <div id="onlinePane">
+        <section class="card onlinePrimaryCard">
+          <h2>Now Playing</h2>
+          <div id="onlineConnStatus" class="hint">Disconnected.</div>
+          <div id="onlineMatchStatus" class="hint">No active match.</div>
+          <div id="onlineMeepleStatus" class="hint">Meeple selection: none.</div>
+          <div id="onlineScoreSummary"></div>
         </section>
+
+        <details class="card onlineCollapse" open>
+          <summary>Turn Actions</summary>
+          <div class="row">
+            <button id="onlineTileSubmitBtn" type="button">1) Submit Tile</button>
+            <button id="onlineTileResetBtn" type="button">Reset Tile</button>
+          </div>
+          <div class="row">
+            <button id="onlineTurnSubmitBtn" type="button">2) Submit Meeple + End</button>
+            <button id="onlineTurnSkipBtn" type="button">2) Skip Meeple + End</button>
+          </div>
+          <div class="hint">
+            Place the drawn tile first, submit it, then optionally pick a marker and submit/skip meeple.
+          </div>
+        </details>
+
+        <details class="card onlineCollapse">
+          <summary>Score Details</summary>
+          <div class="hint">Tap any row to highlight that connected area on the board.</div>
+          <div id="onlineFeatureList" class="onlineFeatureList"></div>
+        </details>
+
+        <details class="card onlineCollapse">
+          <summary>Lobby</summary>
+          <div id="onlineUsersList" class="onlineList"></div>
+        </details>
+
+        <details class="card onlineCollapse">
+          <summary>Invites</summary>
+          <div id="onlineInviteList" class="onlineList"></div>
+        </details>
+
+        <details class="card onlineCollapse">
+          <summary>Global Chat</summary>
+          <div id="onlineChatLog" class="onlineChatLog"></div>
+          <div class="row">
+            <input id="onlineChatInput" type="text" placeholder="Say something..." maxlength="220" />
+            <button id="onlineChatSend" type="button">Send</button>
+          </div>
+        </details>
+
+        <details class="card onlineCollapse">
+          <summary>Settings</summary>
+          <div class="row">
+            <input id="onlineNameInput" type="text" placeholder="Your name" maxlength="28" />
+            <button id="onlineConnectBtn" type="button">Connect</button>
+            <button id="onlineDisconnectBtn" type="button">Disconnect</button>
+          </div>
+
+          <div class="row">
+            <button id="rotL" title="Rotate left">⟲</button>
+            <div id="rotLabel">Rotation: 0°</div>
+            <button id="rotR" title="Rotate right">⟳</button>
+          </div>
+
+          <div class="row">
+            <label class="chk"><input type="checkbox" id="simplifiedGraphics"> Simplified graphics</label>
+          </div>
+          <div class="row hidden">
+            <label class="chk"><input type="checkbox" id="useCounts" checked> Respect tile counts</label>
+            <label class="chk"><input type="checkbox" id="ignoreMeepleRule"> Ignore occupied rule</label>
+          </div>
+
+          <div class="row hidden">
+            <button class="pbtn" id="p1btn">Player 1 (Blue)</button>
+            <button class="pbtn" id="p2btn">Player 2 (Red)</button>
+          </div>
+
+          <div class="row hidden">
+            <label for="tileSelect">Tile</label>
+            <select id="tileSelect"></select>
+          </div>
+          <div class="row hidden">
+            <div id="tilePreview" class="tilePreview" title="Selected tile preview"></div>
+            <div id="tilePalette" class="palette" aria-label="Tile palette"></div>
+          </div>
+
+          <div class="row hidden">
+            <button id="undoBtn">Undo</button>
+            <button id="resetBtn">Reset</button>
+            <button id="exportBtn">Export JSON</button>
+            <button id="importBtn">Import JSON</button>
+            <input id="importFile" type="file" accept="application/json" hidden />
+          </div>
+          <div class="row hidden">
+            <button id="autoFillBoardBtn">Auto-fill Board</button>
+            <button id="autoMeeplesBtn">Random 5+5 Meeples</button>
+          </div>
+        </details>
       </div>
 
+      <div id="scoreBox" class="hidden"></div>
+      <div id="playPane" class="hidden"></div>
+      <div id="refinePane" class="hidden"></div>
+      <button id="tabPlay" class="hidden" type="button">Play</button>
+      <button id="tabRefine" class="hidden" type="button">Refine</button>
+      <button id="tabOnline" class="hidden" type="button">Online</button>
     </aside>
 
     <main id="main">
       <div id="toolbar">
         <div id="status">Loading…</div>
       </div>
-      <div id="boardWrap" tabindex="0" title="Hover to enable arrow keys; wheel to rotate">
+      <div id="boardWrap" tabindex="0" title="Tap/drag board. Wheel rotates selected tile in desktop browsers.">
         <div id="board"></div>
       </div>
+      <div id="refineMain" class="hidden"></div>
     </main>
   </div>
 
-  <script src="app.js?v=373"></script>
+  <script src="app.js?v=391"></script>
 </body>
 </html>

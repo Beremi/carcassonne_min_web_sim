@@ -9,7 +9,7 @@
   - Loads carcassonne_base_A-X_areas.json (approx polygons per feature) and uses them for hover highlighting.
 */
 
-const APP_VERSION = "3.7.3";
+const APP_VERSION = "3.8.0";
 console.log(`Carcassonne sim ${APP_VERSION}`);
 
 const OVERRIDES_STORAGE_KEY = "carc_areas_overrides_v1";
@@ -23,12 +23,33 @@ const PORT_ROT_CW = {
   Nw: "En", Ne: "Es", En: "Se", Es: "Sw", Se: "Ws", Sw: "Wn", Ws: "Nw", Wn: "Ne"
 };
 const PORT_DISPLAY_ORDER = ["Nw","N","Ne","Wn","W","Ws","En","E","Es","Sw","S","Se"];
+const PORT_GRID_5X5 = [
+  [null, "Nw", "N", "Ne", null],
+  ["Wn", null, null, null, "En"],
+  ["W",  null, null, null, "E"],
+  ["Ws", null, null, null, "Es"],
+  [null, "Sw", "S", "Se", null]
+];
 const PORTS_BY_FEATURE_TYPE = {
   field: ["Nw","Ne","En","Es","Se","Sw","Ws","Wn"],
   road: ["N","E","S","W"],
   city: ["N","E","S","W"],
   cloister: []
 };
+const REFINE_TYPE_PRIORITY = { cloister: 0, road: 1, city: 2, field: 3 };
+const EDGE_TO_FIELD_HALVES = {
+  N: ["Nw","Ne"],
+  E: ["En","Es"],
+  S: ["Sw","Se"],
+  W: ["Wn","Ws"]
+};
+const CITY_EDGE_TO_ADJ_FIELD_PORTS = {
+  N: ["Nw","Ne","Wn","En"],
+  E: ["En","Es","Ne","Se"],
+  S: ["Sw","Se","Ws","Es"],
+  W: ["Wn","Ws","Nw","Sw"]
+};
+const SIDEBAR_WIDTH_STORAGE_KEY = "carc_sidebar_width_px_v1";
 function allowedPortsForType(type){
   return PORTS_BY_FEATURE_TYPE[type] ? [...PORTS_BY_FEATURE_TYPE[type]] : [];
 }
@@ -77,6 +98,15 @@ class UnionFind {
 function keyXY(x,y){ return `${x},${y}`; }
 function parseXY(k){ const [x,y]=k.split(",").map(Number); return {x,y}; }
 function deepCopy(x){ return JSON.parse(JSON.stringify(x)); }
+function arraysEqual(a,b){
+  if(a===b) return true;
+  if(!Array.isArray(a) || !Array.isArray(b)) return false;
+  if(a.length!==b.length) return false;
+  for(let i=0;i<a.length;i++){
+    if(a[i]!==b[i]) return false;
+  }
+  return true;
+}
 const $ = (sel)=>document.querySelector(sel);
 
 const state = {
@@ -96,6 +126,7 @@ const state = {
   selectedRot: 0,
   selectedPlayer: 1,
   ignoreMeepleRule: false,
+  simplifiedGraphics: false,
 
   scoredKeys: new Set(),
   score: {1:0, 2:0},
@@ -106,9 +137,41 @@ const state = {
   boardHot: false,
 
   hoverFeature: null, // { type, tiles:Set(cellKey), markers:[{cellKey,type,pt}], featureIdsByCell: Map(cellKey -> Set(localId)) }
-  activeTab: "play",
-  refine: { list: [], idx: 0, N: 256, brushR: 10, down: false, mode: "add", mask: null, tileId:null, featureId:null, featureType:null, canvas:null, ctx:null, baseImg:null, maskHashLoaded: 0, lastMouse: {x:0.5,y:0.5, has:false} }
+  hoverMarkerKey: null, // "x,y:featureId" marker currently driving hoverFeature
+  selectedScoreKey: null, // group key currently selected in score UI
+  selectedScoreFeature: null, // {key,type,tiles,featureIdsByCell,nodeKeys,cityFeatureIdsByCell?,cityLabelsByCell?}
+  selectedScoreTone: null, // null|"neutral"
+  scoreDetailsOpen: { city: true, road: false, cloister: false, field: true },
+  activeTab: "online",
+  refine: { list: [], idx: 0, N: 256, brushR: 10, down: false, mode: "add", mask: null, tileId:null, featureId:null, featureType:null, canvas:null, ctx:null, baseImg:null, maskHashLoaded: 0, lastMouse: {x:0.5,y:0.5, has:false} },
+  online: {
+    connected: false,
+    token: null,
+    userId: null,
+    userName: "",
+    lobby: null,
+    match: null,
+    pollTimer: null,
+    hbTimer: null,
+    pollBusy: false,
+    pendingTile: null, // {x,y,rotDeg,tileId}
+    tileLocked: false,
+    pendingMeepleFeatureId: null,
+    localSnapshot: null,
+    chatRenderedLastId: null,
+    matchRenderSig: null
+  }
 };
+
+function clearHoverFeatureState(){
+  state.hoverFeature = null;
+  state.hoverMarkerKey = null;
+}
+function clearSelectedScoreState(){
+  state.selectedScoreKey = null;
+  state.selectedScoreFeature = null;
+  state.selectedScoreTone = null;
+}
 
 function snapshot(){
   return {
@@ -133,19 +196,856 @@ function restore(snap){
   state.selectedPlayer = snap.selectedPlayer;
   state.selectedCell = null;
   state.hoverCell = null;
-  state.hoverFeature = null;
+  clearHoverFeatureState();
+  clearSelectedScoreState();
 }
 function pushUndo(){ state.undoStack.push(snapshot()); if(state.undoStack.length>120) state.undoStack.shift(); }
 
 function setStatus(msg){ $("#status").textContent = msg; }
 function tileImageUrl(tileId){ return `images/tile_${tileId}.png`; }
 
+const SIMPLE_COLORS = {
+  field: "#7dac45",
+  city: "#d2b059",
+  road: "#ffffff",
+  roadOutline: "#111111",
+  outline: "#111111",
+  cloister: "#d53636",
+  crest: "#3f78d9"
+};
+const SIMPLE_EDGE_ANCHOR = {
+  N: [50, 0],
+  E: [100, 50],
+  S: [50, 100],
+  W: [0, 50]
+};
+const SIMPLE_FIELD_PORT_SEED = {
+  Nw: [25, 8],
+  Ne: [75, 8],
+  En: [92, 25],
+  Es: [92, 75],
+  Se: [75, 92],
+  Sw: [25, 92],
+  Ws: [8, 75],
+  Wn: [8, 25]
+};
+const tileImgCache = new Map();
+
+function svgEl(tag){
+  return document.createElementNS("http://www.w3.org/2000/svg", tag);
+}
+
+function smoothRingPath(poly){
+  if(!Array.isArray(poly) || poly.length<3) return "";
+  const pts = poly.map(([x,y])=>[x*100, y*100]);
+  const n = pts.length;
+  const pLast = pts[n-1];
+  const p0 = pts[0];
+  const start = [(pLast[0]+p0[0])/2, (pLast[1]+p0[1])/2];
+
+  let d = `M ${start[0].toFixed(2)} ${start[1].toFixed(2)}`;
+  for(let i=0;i<n;i++){
+    const p = pts[i];
+    const q = pts[(i+1)%n];
+    const m = [(p[0]+q[0])/2, (p[1]+q[1])/2];
+    d += ` Q ${p[0].toFixed(2)} ${p[1].toFixed(2)} ${m[0].toFixed(2)} ${m[1].toFixed(2)}`;
+  }
+  d += " Z";
+  return d;
+}
+
+function edgePortsOfFeature(feat){
+  return (feat.ports || []).filter(p=>p==="N" || p==="E" || p==="S" || p==="W");
+}
+
+function normalizedEdgePorts(ports){
+  const keep = new Set((ports || []).filter(p=>p==="N"||p==="E"||p==="S"||p==="W"));
+  return ["N","E","S","W"].filter(p=>keep.has(p));
+}
+
+function rotatePointCW(pt, steps){
+  let [x,y] = pt;
+  for(let i=0;i<steps;i++){
+    [x,y] = [100-y, x];
+  }
+  return [x,y];
+}
+
+function rotatePointsCW(points, steps){
+  return points.map(p=>rotatePointCW(p, steps));
+}
+
+function smoothPathFromPoints(points){
+  return smoothRingPath((points||[]).map(([x,y])=>[x/100, y/100]));
+}
+
+function polygonPathFromPoints(points){
+  if(!Array.isArray(points) || points.length<3) return "";
+  let d = `M ${points[0][0].toFixed(2)} ${points[0][1].toFixed(2)}`;
+  for(let i=1;i<points.length;i++){
+    d += ` L ${points[i][0].toFixed(2)} ${points[i][1].toFixed(2)}`;
+  }
+  d += " Z";
+  return d;
+}
+
+function featureCenterPx(feat){
+  const mp = Array.isArray(feat?.meeple_placement) ? feat.meeple_placement : [0.5,0.5];
+  return [mp[0]*100, mp[1]*100];
+}
+
+function cityOneEdgeFanPoints(edge, depth=30, samples=16){
+  const base = [[0,0],[100,0]];
+  for(let i=1;i<samples;i++){
+    const x = 100 - (i*100/samples);
+    const t = Math.sin(Math.PI*(x/100));
+    const y = depth * Math.max(0, t);
+    base.push([x, y]);
+  }
+  const steps = {N:0, E:1, S:2, W:3}[edge] ?? 0;
+  return rotatePointsCW(base, steps);
+}
+
+function sampleQuadratic(p0, c, p1, n=14){
+  const out = [];
+  for(let i=1;i<n;i++){
+    const t = i / n;
+    const mt = 1 - t;
+    out.push([
+      mt*mt*p0[0] + 2*mt*t*c[0] + t*t*p1[0],
+      mt*mt*p0[1] + 2*mt*t*c[1] + t*t*p1[1]
+    ]);
+  }
+  return out;
+}
+
+function cityAdjacentEdgesPoints(ports){
+  const s = new Set(ports || []);
+  // Base orientation: N+W city. Curve from (100,0) to (0,100), bent toward corner (0,0).
+  const base = [[0,0],[100,0]];
+  base.push(...sampleQuadratic([100,0],[28,28],[0,100],16));
+  base.push([0,100]);
+
+  let steps = 0;
+  if(s.has("N") && s.has("E")) steps = 1;
+  else if(s.has("E") && s.has("S")) steps = 2;
+  else if(s.has("S") && s.has("W")) steps = 3;
+  return rotatePointsCW(base, steps);
+}
+
+function cityThreeEdgesPoints(missing){
+  // Base orientation: missing S (city on N+E+W).
+  // Smooth inward boundary only on missing edge.
+  const base = [[0,0],[100,0],[100,100]];
+  base.push(...sampleQuadratic([100,100],[50,72],[0,100],18));
+  base.push([0,100]);
+  const steps = {S:0, W:1, N:2, E:3}[missing] ?? 0;
+  return rotatePointsCW(base, steps);
+}
+
+function cityPointsFromPorts(ports){
+  const p = normalizedEdgePorts(ports);
+  const s = new Set(p);
+
+  if(p.length===0) return [[34,34],[66,34],[66,66],[34,66]];
+  if(p.length===4) return [[0,0],[100,0],[100,100],[0,100]];
+  if(p.length===1) return cityOneEdgeFanPoints(p[0]);
+
+  if(p.length===2){
+    const a = p[0], b = p[1];
+    const opposite = (a==="N"&&b==="S") || (a==="S"&&b==="N") || (a==="E"&&b==="W") || (a==="W"&&b==="E");
+    if(opposite){
+      const baseNS = [[0,0],[100,0],[82,46],[82,54],[100,100],[0,100],[18,54],[18,46]];
+      const steps = (a==="N" || a==="S") ? 0 : 1;
+      return rotatePointsCW(baseNS, steps);
+    }
+    return cityAdjacentEdgesPoints(p);
+  }
+
+  const missing = ["N","E","S","W"].find(e=>!s.has(e));
+  return cityThreeEdgesPoints(missing);
+}
+
+function cityPathFromPorts(ports){
+  const pts = cityPointsFromPorts(ports || []);
+  return polygonPathFromPoints(pts);
+}
+
+function roadSplitsFieldsAtEdge(roadFeat, feats, edge){
+  const fieldOwner = {};
+  for(const f of feats){
+    if(f.type!=="field") continue;
+    for(const hp of (f.ports || [])){
+      if(hp==="Nw"||hp==="Ne"||hp==="En"||hp==="Es"||hp==="Se"||hp==="Sw"||hp==="Ws"||hp==="Wn"){
+        fieldOwner[hp] = f.id;
+      }
+    }
+  }
+  const hs = EDGE_TO_FIELD_HALVES[edge] || [];
+  if(hs.length!==2) return false;
+  return !!fieldOwner[hs[0]] && !!fieldOwner[hs[1]] && fieldOwner[hs[0]] !== fieldOwner[hs[1]];
+}
+
+function roadDeadEndTarget(roadFeat, feats){
+  const port = edgePortsOfFeature(roadFeat)[0];
+  const split = roadSplitsFieldsAtEdge(roadFeat, feats, port);
+
+  const clo = feats.find(f=>f.type==="cloister");
+  if(clo){
+    return {pt: [50,50], dot:false};
+  }
+
+  const cities = feats.filter(f=>f.type==="city");
+  if(cities.length){
+    if(port==="N") return {pt:[50,52], dot:false};
+    if(port==="S") return {pt:[50,48], dot:false};
+    if(port==="E") return {pt:[48,50], dot:false};
+    if(port==="W") return {pt:[52,50], dot:false};
+  }
+
+  if(port==="N") return {pt:[50, split ? 36 : 28], dot:true};
+  if(port==="S") return {pt:[50, split ? 64 : 72], dot:true};
+  if(port==="E") return {pt:[split ? 64 : 72, 50], dot:true};
+  if(port==="W") return {pt:[split ? 36 : 28, 50], dot:true};
+  return {pt:[50,50], dot:true};
+}
+
+function edgeInwardControl(edge, dist=24){
+  if(edge==="N") return [50, dist];
+  if(edge==="S") return [50, 100-dist];
+  if(edge==="E") return [100-dist, 50];
+  return [dist, 50];
+}
+
+function drawRoadStroke(svg, d){
+  const pOutline = svgEl("path");
+  pOutline.setAttribute("d", d);
+  pOutline.setAttribute("fill", "none");
+  pOutline.setAttribute("stroke", SIMPLE_COLORS.roadOutline);
+  pOutline.setAttribute("stroke-width", "10");
+  pOutline.setAttribute("stroke-linecap", "round");
+  pOutline.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(pOutline);
+
+  const pRoad = svgEl("path");
+  pRoad.setAttribute("d", d);
+  pRoad.setAttribute("fill", "none");
+  pRoad.setAttribute("stroke", SIMPLE_COLORS.road);
+  pRoad.setAttribute("stroke-width", "6.2");
+  pRoad.setAttribute("stroke-linecap", "round");
+  pRoad.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(pRoad);
+}
+
+function roadFeatureDrawData(feat, feats, roadCtx=null){
+  const out = { paths: [], dots: [] };
+  const ports = edgePortsOfFeature(feat);
+  if(ports.length===0) return out;
+
+  if(ports.length===1){
+    const edge = ports[0];
+    const a = SIMPLE_EDGE_ANCHOR[edge];
+    const sharedJunction = roadCtx?.singleToJunction?.get(feat.id) || null;
+    if(sharedJunction){
+      out.paths.push(`M ${a[0]} ${a[1]} L ${sharedJunction[0].toFixed(2)} ${sharedJunction[1].toFixed(2)}`);
+      return out;
+    }
+
+    const tgt = roadDeadEndTarget(feat, feats);
+    out.paths.push(`M ${a[0]} ${a[1]} L ${tgt.pt[0].toFixed(2)} ${tgt.pt[1].toFixed(2)}`);
+    if(tgt.dot){
+      out.dots.push({cx:tgt.pt[0], cy:tgt.pt[1], r:3.2});
+    }
+    return out;
+  }
+
+  if(ports.length===2){
+    const [p0,p1] = ports;
+    const a = SIMPLE_EDGE_ANCHOR[p0], b = SIMPLE_EDGE_ANCHOR[p1];
+    const c1 = edgeInwardControl(p0, 24);
+    const c2 = edgeInwardControl(p1, 24);
+    out.paths.push(`M ${a[0]} ${a[1]} C ${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${b[0]} ${b[1]}`);
+    return out;
+  }
+
+  const anchors = ports.map(p=>SIMPLE_EDGE_ANCHOR[p]).filter(Boolean);
+  const mp = featureCenterPx(feat);
+  const jx = (anchors.reduce((a,p)=>a+p[0],0) + mp[0]) / (anchors.length + 1);
+  const jy = (anchors.reduce((a,p)=>a+p[1],0) + mp[1]) / (anchors.length + 1);
+  const junction = [jx, jy];
+
+  for(const a of anchors){
+    const c = [(a[0]*2 + junction[0])/3, (a[1]*2 + junction[1])/3];
+    out.paths.push(`M ${a[0]} ${a[1]} Q ${c[0].toFixed(2)} ${c[1].toFixed(2)} ${junction[0].toFixed(2)} ${junction[1].toFixed(2)}`);
+  }
+  out.dots.push({cx:junction[0], cy:junction[1], r:3.3});
+  return out;
+}
+
+function buildRoadRenderContext(roads, feats){
+  const onePortRoads = roads.filter(r=>edgePortsOfFeature(r).length===1);
+  const multiPortRoads = roads.filter(r=>edgePortsOfFeature(r).length>1);
+  const singleToJunction = new Map();
+  let junction = null;
+
+  // Crossroads can be encoded as separate one-port roads, including tiles with a city.
+  if(multiPortRoads.length===0 && onePortRoads.length>=3){
+    junction = [50,50];
+    for(const r of onePortRoads) singleToJunction.set(r.id, junction);
+  }
+
+  return {singleToJunction, junction};
+}
+
+function drawRoadFeature(svg, feat, feats, roadCtx=null){
+  const draw = roadFeatureDrawData(feat, feats, roadCtx);
+  for(const d of draw.paths) drawRoadStroke(svg, d);
+  for(const dot of draw.dots){
+    const cc = svgEl("circle");
+    cc.setAttribute("cx", dot.cx.toFixed(2));
+    cc.setAttribute("cy", dot.cy.toFixed(2));
+    cc.setAttribute("r", String(dot.r));
+    cc.setAttribute("fill", SIMPLE_COLORS.roadOutline);
+    svg.appendChild(cc);
+  }
+}
+
+function drawCloisterCross(svg, feat){
+  const mp = Array.isArray(feat.meeple_placement) ? feat.meeple_placement : [0.5,0.5];
+  const cx = mp[0]*100, cy = mp[1]*100;
+
+  const vert0 = svgEl("line");
+  vert0.setAttribute("x1", cx);
+  vert0.setAttribute("y1", cy-16);
+  vert0.setAttribute("x2", cx);
+  vert0.setAttribute("y2", cy+14);
+  vert0.setAttribute("stroke", SIMPLE_COLORS.outline);
+  vert0.setAttribute("stroke-width", "9");
+  vert0.setAttribute("stroke-linecap", "round");
+  svg.appendChild(vert0);
+
+  const hor0 = svgEl("line");
+  hor0.setAttribute("x1", cx-12);
+  hor0.setAttribute("y1", cy-3);
+  hor0.setAttribute("x2", cx+12);
+  hor0.setAttribute("y2", cy-3);
+  hor0.setAttribute("stroke", SIMPLE_COLORS.outline);
+  hor0.setAttribute("stroke-width", "7");
+  hor0.setAttribute("stroke-linecap", "round");
+  svg.appendChild(hor0);
+
+  const vert1 = svgEl("line");
+  vert1.setAttribute("x1", cx);
+  vert1.setAttribute("y1", cy-16);
+  vert1.setAttribute("x2", cx);
+  vert1.setAttribute("y2", cy+14);
+  vert1.setAttribute("stroke", SIMPLE_COLORS.cloister);
+  vert1.setAttribute("stroke-width", "5");
+  vert1.setAttribute("stroke-linecap", "round");
+  svg.appendChild(vert1);
+
+  const hor1 = svgEl("line");
+  hor1.setAttribute("x1", cx-12);
+  hor1.setAttribute("y1", cy-3);
+  hor1.setAttribute("x2", cx+12);
+  hor1.setAttribute("y2", cy-3);
+  hor1.setAttribute("stroke", SIMPLE_COLORS.cloister);
+  hor1.setAttribute("stroke-width", "3.6");
+  hor1.setAttribute("stroke-linecap", "round");
+  svg.appendChild(hor1);
+}
+
+function drawShield(svg, cx, cy, s=5.8){
+  const pts = [
+    [cx, cy-s*1.2],
+    [cx+s*0.9, cy-s*0.7],
+    [cx+s*0.8, cy+s*0.5],
+    [cx, cy+s*1.5],
+    [cx-s*0.8, cy+s*0.5],
+    [cx-s*0.9, cy-s*0.7]
+  ];
+  const pg = svgEl("polygon");
+  pg.setAttribute("points", pts.map(p=>`${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(" "));
+  pg.setAttribute("fill", SIMPLE_COLORS.crest);
+  pg.setAttribute("stroke", SIMPLE_COLORS.outline);
+  pg.setAttribute("stroke-width", "1.1");
+  pg.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(pg);
+}
+
+function drawCityCrests(svg, feat){
+  const cnt = Math.max(0, Number(feat?.tags?.pennants || 0)|0);
+  if(cnt<=0) return;
+  const mp = Array.isArray(feat.meeple_placement) ? feat.meeple_placement : [0.5,0.5];
+  const cx = mp[0]*100, cy = mp[1]*100;
+  if(cnt===1){
+    drawShield(svg, cx, cy);
+    return;
+  }
+  for(let i=0;i<cnt;i++){
+    const a = (Math.PI*2*i)/cnt;
+    drawShield(svg, cx + Math.cos(a)*7.2, cy + Math.sin(a)*7.2, 5.2);
+  }
+}
+
+function fieldSeedFromPorts(feat){
+  const ports = normalizePortsForType(feat?.ports || [], "field");
+  if(!ports.length) return [50,50];
+  let sx = 0, sy = 0, c = 0;
+  for(const p of ports){
+    const pt = SIMPLE_FIELD_PORT_SEED[p];
+    if(!pt) continue;
+    sx += pt[0];
+    sy += pt[1];
+    c++;
+  }
+  if(c<=0) return [50,50];
+  return [sx/c, sy/c];
+}
+
+function findNearestMaskComponent(mask, comp, N, sx, sy){
+  const clamp = (v)=>Math.max(0, Math.min(N-1, v|0));
+  sx = clamp(sx); sy = clamp(sy);
+  const start = sy*N + sx;
+  if(mask[start]) return comp[start];
+
+  const lim = Math.max(N, N);
+  for(let r=1; r<lim; r++){
+    const x0 = Math.max(0, sx-r), x1 = Math.min(N-1, sx+r);
+    const y0 = Math.max(0, sy-r), y1 = Math.min(N-1, sy+r);
+
+    for(let x=x0; x<=x1; x++){
+      const iTop = y0*N + x;
+      if(mask[iTop]) return comp[iTop];
+      const iBot = y1*N + x;
+      if(mask[iBot]) return comp[iBot];
+    }
+    for(let y=y0+1; y<y1; y++){
+      const iL = y*N + x0;
+      if(mask[iL]) return comp[iL];
+      const iR = y*N + x1;
+      if(mask[iR]) return comp[iR];
+    }
+  }
+  return -1;
+}
+
+function connectedComponents(mask, N){
+  const comp = new Int32Array(N*N);
+  comp.fill(-1);
+  const components = [];
+  const q = new Int32Array(N*N);
+
+  for(let i=0;i<N*N;i++){
+    if(!mask[i] || comp[i]!==-1) continue;
+    const cid = components.length;
+    const cells = [];
+    let qs = 0, qe = 0;
+    q[qe++] = i;
+    comp[i] = cid;
+
+    while(qs<qe){
+      const cur = q[qs++];
+      cells.push(cur);
+      const x = cur % N;
+      const y = (cur / N) | 0;
+
+      const tryPush = (nx, ny)=>{
+        if(nx<0 || ny<0 || nx>=N || ny>=N) return;
+        const ni = ny*N + nx;
+        if(!mask[ni] || comp[ni]!==-1) return;
+        comp[ni] = cid;
+        q[qe++] = ni;
+      };
+      tryPush(x-1, y);
+      tryPush(x+1, y);
+      tryPush(x, y-1);
+      tryPush(x, y+1);
+    }
+    components.push(cells);
+  }
+
+  return {comp, components};
+}
+
+function cloisterLineSpecs(feat){
+  const mp = Array.isArray(feat?.meeple_placement) ? feat.meeple_placement : [0.5,0.5];
+  const cx = mp[0]*100, cy = mp[1]*100;
+  return [
+    {x1:cx, y1:cy-16, x2:cx, y2:cy+14, width:9},
+    {x1:cx-12, y1:cy-3, x2:cx+12, y2:cy-3, width:7},
+    {x1:cx, y1:cy-16, x2:cx, y2:cy+14, width:5},
+    {x1:cx-12, y1:cy-3, x2:cx+12, y2:cy-3, width:3.6}
+  ];
+}
+
+function buildSimplifiedFeatureGeometry(tileId){
+  if(simplifiedFeatureGeomCache.has(tileId)) return simplifiedFeatureGeomCache.get(tileId);
+
+  const feats = mergedFeaturesForTile(tileId).filter(f=>["city","road","field","cloister"].includes(f.type));
+  const roads = feats.filter(f=>f.type==="road");
+  const cities = feats.filter(f=>f.type==="city");
+  const cloisters = feats.filter(f=>f.type==="cloister");
+  const fields = feats.filter(f=>f.type==="field");
+  const roadCtx = buildRoadRenderContext(roads, feats);
+
+  const byFeature = new Map();
+  for(const c of cities){
+    const d = cityPathFromPorts(c.ports || []);
+    byFeature.set(c.id, {
+      type: "city",
+      fillPaths: d ? [d] : [],
+      strokePaths: [],
+      circles: [],
+      polygons: []
+    });
+  }
+  for(const r of roads){
+    const rd = roadFeatureDrawData(r, feats, roadCtx);
+    byFeature.set(r.id, {
+      type: "road",
+      fillPaths: [],
+      strokePaths: rd.paths.map(d=>({d, width:10, linecap:"round", linejoin:"round"})),
+      circles: rd.dots.map(dot=>({cx:dot.cx, cy:dot.cy, r:dot.r})),
+      polygons: []
+    });
+  }
+  for(const m of cloisters){
+    const lines = cloisterLineSpecs(m);
+    byFeature.set(m.id, {
+      type: "cloister",
+      fillPaths: [],
+      strokePaths: lines.map(ln=>({
+        d: `M ${ln.x1.toFixed(2)} ${ln.y1.toFixed(2)} L ${ln.x2.toFixed(2)} ${ln.y2.toFixed(2)}`,
+        width: ln.width,
+        linecap: "round",
+        linejoin: "round"
+      })),
+      circles: [],
+      polygons: []
+    });
+  }
+
+  // Build field regions from the same simplified city/road geometry.
+  if(fields.length){
+    const N = 112;
+    const occ = new Uint8Array(N*N);
+    const off = document.createElement("canvas");
+    off.width = N;
+    off.height = N;
+    const ctx = off.getContext("2d");
+    ctx.clearRect(0,0,N,N);
+    ctx.fillStyle = "#fff";
+    ctx.strokeStyle = "#fff";
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    const scale = (N-1) / 100;
+    ctx.save();
+    ctx.scale(scale, scale);
+
+    for(const c of cities){
+      const cg = byFeature.get(c.id);
+      for(const d of (cg?.fillPaths || [])){
+        try{
+          ctx.fill(new Path2D(d), "nonzero");
+        }catch(_err){}
+      }
+    }
+    for(const r of roads){
+      const rg = byFeature.get(r.id);
+      for(const sp of (rg?.strokePaths || [])){
+        try{
+          ctx.lineWidth = sp.width;
+          ctx.stroke(new Path2D(sp.d));
+        }catch(_err){}
+      }
+      for(const cc of (rg?.circles || [])){
+        ctx.beginPath();
+        ctx.arc(cc.cx, cc.cy, cc.r, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+
+    const img = ctx.getImageData(0,0,N,N).data;
+    for(let i=0;i<N*N;i++){
+      occ[i] = img[i*4+3] > 0 ? 1 : 0;
+    }
+    const fieldMask = new Uint8Array(N*N);
+    for(let i=0;i<N*N;i++) fieldMask[i] = occ[i] ? 0 : 1;
+
+    const {comp, components} = connectedComponents(fieldMask, N);
+    const compPolys = new Map();
+
+    for(const ff of fields){
+      const mp = Array.isArray(ff?.meeple_placement) ? ff.meeple_placement : [0.5,0.5];
+      let sx = Math.round((mp[0] || 0.5) * (N-1));
+      let sy = Math.round((mp[1] || 0.5) * (N-1));
+      let cid = findNearestMaskComponent(fieldMask, comp, N, sx, sy);
+      if(cid<0){
+        const [fx,fy] = fieldSeedFromPorts(ff);
+        sx = Math.round((fx/100) * (N-1));
+        sy = Math.round((fy/100) * (N-1));
+        cid = findNearestMaskComponent(fieldMask, comp, N, sx, sy);
+      }
+      if(cid<0 || !components[cid]?.length) continue;
+
+      if(!compPolys.has(cid)){
+        const cm = new Uint8Array(N*N);
+        for(const idx of components[cid]) cm[idx] = 1;
+        compPolys.set(cid, maskToPolygons(cm, N));
+      }
+      byFeature.set(ff.id, {
+        type: "field",
+        fillPaths: [],
+        strokePaths: [],
+        circles: [],
+        polygons: compPolys.get(cid) || []
+      });
+    }
+  }
+
+  const out = { byFeature };
+  simplifiedFeatureGeomCache.set(tileId, out);
+  return out;
+}
+
+function addFeatureAreaOverlayFromSimplified(tileDiv, tileId, localIds, mode="hover", tone=null){
+  const geom = buildSimplifiedFeatureGeometry(tileId);
+  if(!geom || !geom.byFeature) return false;
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("viewBox","0 0 100 100");
+  svg.setAttribute("class", `areaSvg ${mode==="score" ? "score" : "hover"}`);
+  svg.style.position="absolute";
+  svg.style.inset="0";
+  svg.style.pointerEvents="none";
+
+  const fillBase = highlightTint(mode==="score" ? 0.48 : 0.40, tone);
+  const lineCol  = highlightTint(mode==="score" ? 0.98 : 0.92, tone);
+  const stroke   = highlightTint(mode==="score" ? 1.00 : 0.96, tone);
+
+  const defs = document.createElementNS("http://www.w3.org/2000/svg","defs");
+  const pid = `hatch_simple_${mode}_${tileId}_${state.selectedPlayer}_${tone || "player"}`;
+  const pat = document.createElementNS("http://www.w3.org/2000/svg","pattern");
+  pat.setAttribute("id", pid);
+  pat.setAttribute("patternUnits","userSpaceOnUse");
+  pat.setAttribute("width","5");
+  pat.setAttribute("height","5");
+  pat.setAttribute("patternTransform","rotate(45)");
+  const line = document.createElementNS("http://www.w3.org/2000/svg","line");
+  line.setAttribute("x1","0"); line.setAttribute("y1","0");
+  line.setAttribute("x2","0"); line.setAttribute("y2","5");
+  line.setAttribute("stroke", lineCol);
+  line.setAttribute("stroke-width","2.4");
+  pat.appendChild(line);
+  defs.appendChild(pat);
+  svg.appendChild(defs);
+
+  let drew = false;
+  for(const lid of localIds){
+    const fg = geom.byFeature.get(lid);
+    if(!fg) continue;
+
+    for(const d of (fg.fillPaths || [])){
+      const p0 = document.createElementNS("http://www.w3.org/2000/svg","path");
+      p0.setAttribute("d", d);
+      p0.setAttribute("fill", fillBase);
+      p0.setAttribute("stroke", stroke);
+      p0.setAttribute("stroke-width", "1.2");
+      svg.appendChild(p0);
+
+      const p1 = document.createElementNS("http://www.w3.org/2000/svg","path");
+      p1.setAttribute("d", d);
+      p1.setAttribute("fill", `url(#${pid})`);
+      p1.setAttribute("stroke", "none");
+      svg.appendChild(p1);
+      drew = true;
+    }
+
+    for(const poly of (fg.polygons || [])){
+      const pts = (poly||[]).map(p=>`${p[0]*100},${p[1]*100}`).join(" ");
+      const pg0 = document.createElementNS("http://www.w3.org/2000/svg","polygon");
+      pg0.setAttribute("points", pts);
+      pg0.setAttribute("fill", fillBase);
+      pg0.setAttribute("stroke", stroke);
+      pg0.setAttribute("stroke-width", "1.2");
+      svg.appendChild(pg0);
+
+      const pg1 = document.createElementNS("http://www.w3.org/2000/svg","polygon");
+      pg1.setAttribute("points", pts);
+      pg1.setAttribute("fill", `url(#${pid})`);
+      pg1.setAttribute("stroke", "none");
+      svg.appendChild(pg1);
+      drew = true;
+    }
+
+    for(const sp of (fg.strokePaths || [])){
+      const p0 = document.createElementNS("http://www.w3.org/2000/svg","path");
+      p0.setAttribute("d", sp.d);
+      p0.setAttribute("fill", "none");
+      p0.setAttribute("stroke", fillBase);
+      p0.setAttribute("stroke-width", String(sp.width));
+      p0.setAttribute("stroke-linecap", sp.linecap || "round");
+      p0.setAttribute("stroke-linejoin", sp.linejoin || "round");
+      svg.appendChild(p0);
+
+      const p1 = document.createElementNS("http://www.w3.org/2000/svg","path");
+      p1.setAttribute("d", sp.d);
+      p1.setAttribute("fill", "none");
+      p1.setAttribute("stroke", lineCol);
+      p1.setAttribute("stroke-width", String(Math.max(2.4, sp.width*0.46)));
+      p1.setAttribute("stroke-linecap", sp.linecap || "round");
+      p1.setAttribute("stroke-linejoin", sp.linejoin || "round");
+      p1.setAttribute("stroke-dasharray", "4 2");
+      svg.appendChild(p1);
+      drew = true;
+    }
+
+    for(const cc of (fg.circles || [])){
+      const c0 = document.createElementNS("http://www.w3.org/2000/svg","circle");
+      c0.setAttribute("cx", cc.cx.toFixed(2));
+      c0.setAttribute("cy", cc.cy.toFixed(2));
+      c0.setAttribute("r", String(cc.r));
+      c0.setAttribute("fill", fillBase);
+      c0.setAttribute("stroke", stroke);
+      c0.setAttribute("stroke-width", "1.0");
+      svg.appendChild(c0);
+
+      const c1 = document.createElementNS("http://www.w3.org/2000/svg","circle");
+      c1.setAttribute("cx", cc.cx.toFixed(2));
+      c1.setAttribute("cy", cc.cy.toFixed(2));
+      c1.setAttribute("r", String(cc.r));
+      c1.setAttribute("fill", `url(#${pid})`);
+      c1.setAttribute("stroke", "none");
+      svg.appendChild(c1);
+      drew = true;
+    }
+  }
+
+  if(!drew) return false;
+  tileDiv.appendChild(svg);
+  return true;
+}
+
+function addCityBoundaryOverlayFromSimplified(tileDiv, tileId, localIds){
+  const geom = buildSimplifiedFeatureGeometry(tileId);
+  if(!geom || !geom.byFeature || !localIds || localIds.size===0) return false;
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("viewBox","0 0 100 100");
+  svg.setAttribute("class","areaSvg cityBoundarySvg");
+  svg.style.position = "absolute";
+  svg.style.inset = "0";
+  svg.style.pointerEvents = "none";
+
+  let drew = false;
+  for(const lid of localIds){
+    const fg = geom.byFeature.get(lid);
+    if(!fg) continue;
+
+    for(const d of (fg.fillPaths || [])){
+      const p = document.createElementNS("http://www.w3.org/2000/svg","path");
+      p.setAttribute("d", d);
+      p.setAttribute("fill", "none");
+      p.setAttribute("stroke", "rgba(0,0,0,0.90)");
+      p.setAttribute("stroke-width", "1.35");
+      p.setAttribute("stroke-dasharray", "4 3");
+      p.setAttribute("stroke-linejoin", "round");
+      svg.appendChild(p);
+      drew = true;
+    }
+    for(const poly of (fg.polygons || [])){
+      const pts = (poly||[]).map(p=>`${p[0]*100},${p[1]*100}`).join(" ");
+      const pg = document.createElementNS("http://www.w3.org/2000/svg","polygon");
+      pg.setAttribute("points", pts);
+      pg.setAttribute("fill", "none");
+      pg.setAttribute("stroke", "rgba(0,0,0,0.90)");
+      pg.setAttribute("stroke-width", "1.35");
+      pg.setAttribute("stroke-dasharray", "4 3");
+      pg.setAttribute("stroke-linejoin", "round");
+      svg.appendChild(pg);
+      drew = true;
+    }
+  }
+
+  if(!drew) return false;
+  tileDiv.appendChild(svg);
+  return true;
+}
+
+function makeSimplifiedTileSvg(tileId){
+  const svg = svgEl("svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("class", "simpleTileSvg");
+
+  const bg = svgEl("rect");
+  // Slight overdraw avoids sub-pixel edge fringing that can look like tile borders.
+  bg.setAttribute("x", "-1");
+  bg.setAttribute("y", "-1");
+  bg.setAttribute("width", "102");
+  bg.setAttribute("height", "102");
+  bg.setAttribute("fill", SIMPLE_COLORS.field);
+  svg.appendChild(bg);
+
+  const feats = mergedFeaturesForTile(tileId).filter(f=>["city","road","field","cloister"].includes(f.type));
+  const cities = feats.filter(f=>f.type==="city");
+  const roads = feats.filter(f=>f.type==="road");
+  const cloisters = feats.filter(f=>f.type==="cloister");
+  const roadCtx = buildRoadRenderContext(roads, feats);
+
+  for(const r of roads){
+    drawRoadFeature(svg, r, feats, roadCtx);
+  }
+  if(roadCtx.junction){
+    const jDot = svgEl("circle");
+    jDot.setAttribute("cx", roadCtx.junction[0].toFixed(2));
+    jDot.setAttribute("cy", roadCtx.junction[1].toFixed(2));
+    jDot.setAttribute("r", "3.3");
+    jDot.setAttribute("fill", SIMPLE_COLORS.roadOutline);
+    svg.appendChild(jDot);
+  }
+
+  for(const c of cities){
+    const d = cityPathFromPorts(c.ports || []);
+    if(!d) continue;
+    const p = svgEl("path");
+    p.setAttribute("d", d);
+    p.setAttribute("fill", SIMPLE_COLORS.city);
+    p.setAttribute("stroke", SIMPLE_COLORS.outline);
+    p.setAttribute("stroke-width", "1.35");
+    p.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(p);
+  }
+
+  for(const m of cloisters) drawCloisterCross(svg, m);
+  for(const c of cities) drawCityCrests(svg, c);
+
+  return svg;
+}
+
 function makeTileImg(tileId){
-  const img = document.createElement("img");
+  if(state.simplifiedGraphics){
+    const wrap = document.createElement("div");
+    wrap.className = "tileSimpleWrap";
+    wrap.appendChild(makeSimplifiedTileSvg(tileId));
+    return wrap;
+  }
+
+  let proto = tileImgCache.get(tileId);
+  if(!proto){
+    proto = new Image();
+    proto.className = "tileImg";
+    proto.src = tileImageUrl(tileId);
+    proto.alt = `Tile ${tileId}`;
+    proto.draggable = false;
+    tileImgCache.set(tileId, proto);
+  }
+  const img = proto.cloneNode(false);
   img.className = "tileImg";
-  img.src = tileImageUrl(tileId);
-  img.alt = `Tile ${tileId}`;
   img.draggable = false;
+  img.alt = `Tile ${tileId}`;
   return img;
 }
 
@@ -158,20 +1058,99 @@ function getAreaFeature(tileId, featureId){
   return b || null;
 }
 
+function isOnlineTab(){ return state.activeTab === "online"; }
+function onlineMatchIsActive(){ return !!(state.online.match && state.online.match.status==="active"); }
+
+function captureLocalStateForOnline(){
+  if(state.online.localSnapshot) return;
+  state.online.localSnapshot = snapshot();
+}
+
+function restoreLocalStateFromOnline(){
+  if(!state.online.localSnapshot) return;
+  restore(state.online.localSnapshot);
+  state.online.localSnapshot = null;
+  updateRotLabel();
+  renderTileSelect();
+  renderTilePalette();
+}
+
+function clearOnlinePendingTurn(){
+  state.online.pendingTile = null;
+  state.online.tileLocked = false;
+  state.online.pendingMeepleFeatureId = null;
+}
+
+function applyOnlineMatchToBoardState(){
+  if(!isOnlineTab()) return;
+
+  const m = state.online.match;
+  const prevSelectedCell = state.selectedCell;
+  if(!m){
+    state.board = new Map();
+    state.instSeq = 1;
+    state.score = {1:0, 2:0};
+    state.scoredKeys = new Set();
+    state.selectedCell = null;
+    state.hoverCell = null;
+    clearHoverFeatureState();
+    clearSelectedScoreState();
+    render();
+    return;
+  }
+
+  state.board = new Map(m.board || []);
+  const maxInst = Math.max(0, ...Array.from(state.board.values()).map(v=>Number(v.instId)||0));
+  state.instSeq = Number(m.inst_seq) || (maxInst + 1);
+  state.score = {
+    1: Number(m.score?.["1"] ?? m.score?.[1] ?? 0),
+    2: Number(m.score?.["2"] ?? m.score?.[2] ?? 0)
+  };
+  state.scoredKeys = new Set(m.scored_keys || []);
+  if(m.remaining) state.remaining = deepCopy(m.remaining);
+
+  const youPlayer = Number(m.you_player || 0);
+  if(youPlayer===1 || youPlayer===2) setPlayer(youPlayer);
+
+  const turnTile = m.current_turn?.tile_id;
+  if(turnTile) state.selectedTileId = turnTile;
+
+  state.selectedCell = (prevSelectedCell && state.board.has(prevSelectedCell)) ? prevSelectedCell : null;
+  state.hoverCell = null;
+  clearHoverFeatureState();
+  renderTileSelect();
+  renderTilePalette();
+  updateTilePreview();
+  render();
+}
 
 function setActiveTab(tab){
+  const prevTab = state.activeTab;
+  if(prevTab==="online" && tab!=="online"){
+    restoreLocalStateFromOnline();
+  }
+
   state.activeTab = tab;
   const tp = $("#tabPlay");
   const tr = $("#tabRefine");
+  const to = $("#tabOnline");
   const pp = $("#playPane");
   const rp = $("#refinePane");
+  const op = $("#onlinePane");
+  const bw = $("#boardWrap");
+  const rm = $("#refineMain");
 
   if(tp) tp.classList.toggle("active", tab==="play");
   if(tr) tr.classList.toggle("active", tab==="refine");
+  if(to) to.classList.toggle("active", tab==="online");
   if(pp) pp.classList.toggle("hidden", tab!=="play");
   if(rp) rp.classList.toggle("hidden", tab!=="refine");
+  if(op) op.classList.toggle("hidden", tab!=="online");
+  if(bw) bw.classList.toggle("hidden", tab==="refine");
+  if(rm) rm.classList.toggle("hidden", tab!=="refine");
 
   if(tab==="refine"){
+    state.boardHot = false;
     if(state.tileById.size===0){
       const prog = $("#rpProgress");
       if(prog) prog.textContent = "Tileset is still loading…";
@@ -188,12 +1167,35 @@ function setActiveTab(tab){
       const prog = $("#rpProgress");
       if(prog) prog.textContent = "Refine mode error: " + (err?.message || err);
     }
+  }else if(tab==="online"){
+    captureLocalStateForOnline();
+    if(!state.online.connected){
+      clearOnlinePendingTurn();
+      state.online.match = null;
+    }
+    if(state.online.connected){
+      onlinePoll(true).catch(()=>{});
+    }
+    applyOnlineMatchToBoardState();
+    renderOnlineSidebar();
+    renderOnlineScorePanel();
   }else{
-    state.hoverFeature = null;
+    clearHoverFeatureState();
     render();
   }
 }
+
 function isRefineTab(){ return state.activeTab === "refine"; }
+
+const fieldCityAdjCache = new Map(); // tileId -> Map(fieldId -> Set(cityId))
+const simplifiedFeatureGeomCache = new Map(); // tileId -> simplified overlay geometry
+
+function clearFieldCityAdjCache(){
+  fieldCityAdjCache.clear();
+}
+function clearSimplifiedFeatureGeomCache(){
+  simplifiedFeatureGeomCache.clear();
+}
 
 let overridesSaveTimer = null;
 let overridesSaveChain = Promise.resolve();
@@ -285,10 +1287,47 @@ function persistOverridesToLocalStorage(){
   try{
     state.areasOverride = normalizeOverridesPayload(state.areasOverride || emptyOverridesPayload());
     localStorage.setItem(OVERRIDES_STORAGE_KEY, JSON.stringify(state.areasOverride));
+    clearFieldCityAdjCache();
+    clearSimplifiedFeatureGeomCache();
   }catch(e){
     console.warn("Failed to store overrides:", e);
   }
   scheduleOverridesSaveToServer();
+}
+
+function repairLegacyOverridePorts(){
+  if(!state.areasOverride?.tiles) return 0;
+  let repaired = 0;
+
+  for(const [tileId, tileEntry] of Object.entries(state.areasOverride.tiles)){
+    const features = tileEntry?.features;
+    if(!features || typeof features!=="object") continue;
+
+    for(const [featureId, ov] of Object.entries(features)){
+      if(!ov || typeof ov!=="object" || ov.deleted) continue;
+      const baseFeat = getBaseTileFeature(tileId, featureId);
+      if(!baseFeat) continue;
+
+      const type = ov.type || baseFeat.type || "field";
+      if(Array.isArray(ov.ports)){
+        const normalized = normalizePortsForType(ov.ports, type);
+        if(!arraysEqual(normalized, ov.ports)){
+          ov.ports = normalized;
+          repaired++;
+        }
+      }
+
+      const basePortsForType = normalizePortsForType(baseFeat.ports || [], type);
+      const sameTypeAsBase = !ov.type || ov.type===baseFeat.type;
+      if(Array.isArray(ov.ports) && ov.ports.length===0 && basePortsForType.length>0 && sameTypeAsBase){
+        // Legacy bug: polygon edits could write empty ports for base features.
+        delete ov.ports;
+        repaired++;
+      }
+    }
+  }
+
+  return repaired;
 }
 
 
@@ -441,7 +1480,13 @@ function generateProceduralAreas(){
         rings = [ circleRing(0.5,0.5,0.18, 18) ];
       }
 
-      out.tiles[tileId].features[f.id] = { type: f.type, polygons: rings };
+      out.tiles[tileId].features[f.id] = {
+        type: f.type,
+        polygons: rings,
+        ports: normalizePortsForType(f.ports || [], f.type),
+        tags: deepCopy(f.tags || {}),
+        meeple_placement: Array.isArray(f.meeple_placement) ? deepCopy(f.meeple_placement) : featureCentroid(rings)
+      };
     }
   }
   return out;
@@ -455,7 +1500,13 @@ window.persistOverridesToLocalStorage = persistOverridesToLocalStorage;
 function updateTilePreview(){
   const el = $("#tilePreview");
   if(!el) return;
-  el.style.backgroundImage = `url(${tileImageUrl(state.selectedTileId)})`;
+  el.innerHTML = "";
+  if(state.simplifiedGraphics){
+    el.style.backgroundImage = "none";
+    el.appendChild(makeTileImg(state.selectedTileId));
+  }else{
+    el.style.backgroundImage = `url(${tileImageUrl(state.selectedTileId)})`;
+  }
   el.style.transform = `rotate(${state.selectedRot}deg)`;
 }
 function updateRotLabel(){
@@ -478,6 +1529,9 @@ function cellStepPx(){
 
 function rotateSelected(delta){
   state.selectedRot = (state.selectedRot + delta + 360) % 360;
+  if(isOnlineTab() && state.online.pendingTile && !state.online.tileLocked){
+    state.online.pendingTile.rotDeg = state.selectedRot;
+  }
   updateRotLabel();
   render();
 }
@@ -504,11 +1558,11 @@ function rotatedTile(tileId, rotDeg){
   return out;
 }
 
-function canPlaceAt(tileId, rotDeg, x, y){
+function canPlaceAtOnBoard(boardMap, tileId, rotDeg, x, y){
   const k = keyXY(x,y);
-  if(state.board.has(k)) return {ok:false, reason:"Cell occupied."};
+  if(boardMap.has(k)) return {ok:false, reason:"Cell occupied."};
 
-  const hasAny = state.board.size>0;
+  const hasAny = boardMap.size>0;
   let touches = false;
 
   const tile = rotatedTile(tileId, rotDeg);
@@ -521,9 +1575,9 @@ function canPlaceAt(tileId, rotDeg, x, y){
   ];
   for(const n of neigh){
     const nk = keyXY(x+n.dx, y+n.dy);
-    if(!state.board.has(nk)) continue;
+    if(!boardMap.has(nk)) continue;
     touches = true;
-    const nInst = state.board.get(nk);
+    const nInst = boardMap.get(nk);
     const nTile = rotatedTile(nInst.tileId, nInst.rotDeg);
     const e = n.edge;
     const oe = EDGE_OPP[e];
@@ -539,6 +1593,249 @@ function canPlaceAt(tileId, rotDeg, x, y){
   return {ok:true, reason:"OK"};
 }
 
+function canPlaceAt(tileId, rotDeg, x, y){
+  return canPlaceAtOnBoard(state.board, tileId, rotDeg, x, y);
+}
+
+function boardHalfSpan(){
+  const board = $("#board");
+  if(!board) return 12;
+  const size = Math.sqrt(board.children.length) | 0;
+  return Math.max(1, Math.floor(size/2));
+}
+
+function withinBoardBounds(x, y, half){
+  return Math.abs(x)<=half && Math.abs(y)<=half;
+}
+
+function shuffleInPlace(arr){
+  for(let i=arr.length-1;i>0;i--){
+    const j = (Math.random()*(i+1))|0;
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function boardNeighbors4(x, y){
+  return [
+    {x, y:y-1},
+    {x:x+1, y},
+    {x, y:y+1},
+    {x:x-1, y},
+  ];
+}
+
+function buildFrontier(boardMap, half){
+  const frontier = new Set();
+  for(const [k] of boardMap){
+    const {x,y} = parseXY(k);
+    for(const n of boardNeighbors4(x,y)){
+      if(!withinBoardBounds(n.x, n.y, half)) continue;
+      const nk = keyXY(n.x, n.y);
+      if(!boardMap.has(nk)) frontier.add(nk);
+    }
+  }
+  return frontier;
+}
+
+function pickStartTileType(){
+  const ts = state.tileset?.tiles || [];
+  const explicit = ts.find(t=>t.is_start_tile_type && (state.counts?.[t.id] ?? 0) > 0);
+  if(explicit) return explicit.id;
+  const ids = Array.from(state.tileById.keys()).sort();
+  return ids[0] || null;
+}
+
+function buildDeckFromCounts(remaining){
+  const deck = [];
+  for(const [tileId, cnt] of Object.entries(remaining || {})){
+    for(let i=0;i<(cnt|0);i++) deck.push(tileId);
+  }
+  return deck;
+}
+
+function autoFillBoardWithAllTiles(){
+  const startTileId = pickStartTileType();
+  if(!startTileId){
+    setStatus("Cannot auto-fill: no tile types loaded.");
+    return;
+  }
+  if((state.counts?.[startTileId] ?? 0) <= 0){
+    setStatus(`Cannot auto-fill: start tile type ${startTileId} has no count.`);
+    return;
+  }
+
+  const totalTiles = Object.values(state.counts || {}).reduce((a,b)=>a+(b|0), 0);
+  if(totalTiles<=0){
+    setStatus("Cannot auto-fill: tile counts are empty.");
+    return;
+  }
+
+  const half = boardHalfSpan();
+  const rotations = [0,90,180,270];
+  const maxAttempts = 240;
+  let best = null;
+
+  for(let attempt=1; attempt<=maxAttempts; attempt++){
+    const boardMap = new Map();
+    const remaining = deepCopy(state.counts);
+    let instSeq = 1;
+
+    const startRot = rotations[(Math.random()*4)|0];
+    boardMap.set("0,0", {instId: instSeq++, tileId: startTileId, rotDeg: startRot, meeples: []});
+    remaining[startTileId] -= 1;
+
+    const deck = shuffleInPlace(buildDeckFromCounts(remaining));
+    const frontier = buildFrontier(boardMap, half);
+    let failed = false;
+
+    while(deck.length){
+      const startIdx = (Math.random()*deck.length)|0;
+      let move = null;
+      let deckIdx = -1;
+
+      for(let off=0; off<deck.length; off++){
+        const idx = (startIdx + off) % deck.length;
+        const tileId = deck[idx];
+        const frontierArr = Array.from(frontier);
+        if(frontierArr.length===0) continue;
+        const fStart = (Math.random()*frontierArr.length)|0;
+
+        for(let j=0; j<frontierArr.length; j++){
+          const fk = frontierArr[(fStart + j) % frontierArr.length];
+          const {x,y} = parseXY(fk);
+          const rStart = (Math.random()*4)|0;
+          for(let r=0; r<4; r++){
+            const rot = rotations[(rStart + r) % 4];
+            const ok = canPlaceAtOnBoard(boardMap, tileId, rot, x, y);
+            if(!ok.ok) continue;
+            move = {tileId, x, y, rot};
+            deckIdx = idx;
+            break;
+          }
+          if(move) break;
+        }
+        if(move) break;
+      }
+
+      if(!move){
+        failed = true;
+        break;
+      }
+
+      const mk = keyXY(move.x, move.y);
+      boardMap.set(mk, {
+        instId: instSeq++,
+        tileId: move.tileId,
+        rotDeg: move.rot,
+        meeples: []
+      });
+
+      deck.splice(deckIdx, 1);
+      remaining[move.tileId] -= 1;
+      frontier.delete(mk);
+
+      for(const n of boardNeighbors4(move.x, move.y)){
+        if(!withinBoardBounds(n.x, n.y, half)) continue;
+        const nk = keyXY(n.x, n.y);
+        if(!boardMap.has(nk)) frontier.add(nk);
+      }
+    }
+
+    const placed = boardMap.size;
+    if(!best || placed > best.placed){
+      best = {boardMap, instSeq, remaining, placed, attempt};
+    }
+    if(!failed && placed===totalTiles){
+      best = {boardMap, instSeq, remaining, placed, attempt};
+      break;
+    }
+  }
+
+  if(!best || best.placed<=0){
+    setStatus("Auto-fill failed.");
+    return;
+  }
+
+  pushUndo();
+  state.board = best.boardMap;
+  state.instSeq = best.instSeq;
+  state.remaining = best.remaining;
+  state.scoredKeys.clear();
+  state.score = {1:0, 2:0};
+  state.selectedCell = null;
+  state.hoverCell = null;
+  clearHoverFeatureState();
+  clearSelectedScoreState();
+  recomputeAndScore(true);
+  renderTileSelect();
+  renderTilePalette();
+  render();
+
+  if(best.placed===totalTiles){
+    setStatus(`Auto-filled board with all ${best.placed} tiles (attempt ${best.attempt}/${maxAttempts}).`);
+  }else{
+    setStatus(`Auto-fill partial: placed ${best.placed}/${totalTiles} tiles (best attempt ${best.attempt}/${maxAttempts}).`);
+  }
+}
+
+function randomizeMeeplesOnBoard(perPlayer=5){
+  if(state.board.size===0){
+    setStatus("Board is empty. Auto-fill or place tiles first.");
+    return;
+  }
+
+  pushUndo();
+  for(const inst of state.board.values()) inst.meeples = [];
+
+  const candidates = [];
+  for(const [cellKey, inst] of state.board.entries()){
+    const tile = rotatedTile(inst.tileId, inst.rotDeg);
+    for(const f of tile.features){
+      if(!["road","city","field","cloister"].includes(f.type)) continue;
+      candidates.push({cellKey, inst, featureId: f.id});
+    }
+  }
+  if(candidates.length===0){
+    state.scoredKeys.clear();
+    state.score = {1:0, 2:0};
+    recomputeAndScore(true);
+    render();
+    setStatus("No feature candidates available for meeple randomization.");
+    return;
+  }
+
+  const placed = {1:0, 2:0};
+  for(const player of [1,2]){
+    let attempts = 0;
+    const maxAttempts = candidates.length * 10;
+    while(placed[player] < perPlayer && attempts < maxAttempts){
+      const cand = candidates[(Math.random()*candidates.length)|0];
+      attempts++;
+      if(!cand) break;
+      const {cellKey, inst, featureId} = cand;
+      if(inst.meeples.some(m=>m.featureLocalId===featureId)) continue;
+
+      const g = computeGlobalFeatureForLocal(cellKey, featureId);
+      if(!g) continue;
+      const occupied = (g.meeplesByPlayer[1]||0) + (g.meeplesByPlayer[2]||0) > 0;
+      if(occupied) continue;
+      if(g.type!=="field" && g.complete) continue;
+
+      inst.meeples.push({player, featureLocalId: featureId});
+      placed[player] += 1;
+    }
+  }
+
+  state.scoredKeys.clear();
+  state.score = {1:0, 2:0};
+  clearHoverFeatureState();
+  clearSelectedScoreState();
+  recomputeAndScore(true);
+  render();
+  setStatus(`Random meeples placed — P1 ${placed[1]}/${perPlayer}, P2 ${placed[2]}/${perPlayer}.`);
+}
+
 function initUI(){
   $("#rotL").addEventListener("click", ()=>rotateSelected(-90));
   $("#rotR").addEventListener("click", ()=>rotateSelected(90));
@@ -546,6 +1843,12 @@ function initUI(){
   $("#useCounts").addEventListener("change", (e)=>{
     state.useCounts = e.target.checked;
     renderTileSelect();
+    renderTilePalette();
+    render();
+  });
+  $("#simplifiedGraphics")?.addEventListener("change", (e)=>{
+    state.simplifiedGraphics = !!e.target.checked;
+    updateTilePreview();
     renderTilePalette();
     render();
   });
@@ -578,10 +1881,18 @@ function initUI(){
     state.remaining = deepCopy(state.counts);
     state.selectedCell = null;
     state.hoverCell = null;
-    state.hoverFeature = null;
+    clearHoverFeatureState();
+    clearSelectedScoreState();
     renderTileSelect();
     renderTilePalette();
     render();
+  });
+
+  $("#autoFillBoardBtn")?.addEventListener("click", ()=>{
+    autoFillBoardWithAllTiles();
+  });
+  $("#autoMeeplesBtn")?.addEventListener("click", ()=>{
+    randomizeMeeplesOnBoard(5);
   });
 
   $("#exportBtn").addEventListener("click", ()=>{
@@ -614,7 +1925,8 @@ function initUI(){
     state.instSeq = 1 + Math.max(0, ...Array.from(state.board.values()).map(v=>v.instId||0));
     state.selectedCell = null;
     state.hoverCell = null;
-    state.hoverFeature = null;
+    clearHoverFeatureState();
+    clearSelectedScoreState();
     renderTileSelect();
     renderTilePalette();
     render();
@@ -653,11 +1965,76 @@ function initUI(){
   // Tabs
   const tp = $("#tabPlay");
   const tr = $("#tabRefine");
+  const to = $("#tabOnline");
   if(tp) tp.addEventListener("click", ()=>setActiveTab("play"));
   if(tr) tr.addEventListener("click", ()=>setActiveTab("refine"));
+  if(to) to.addEventListener("click", ()=>setActiveTab("online"));
+  initAppSplitter();
+  initOnlineUI();
 
   updateRotLabel();
   updateTilePreview();
+}
+
+function initAppSplitter(){
+  const app = $("#app");
+  const sidebar = $("#sidebar");
+  const splitter = $("#appSplitter");
+  if(!app || !sidebar || !splitter) return;
+
+  const minWidth = 260;
+  const maxWidth = 760;
+
+  function clampSidebarWidth(width){
+    const maxByViewport = Math.max(minWidth, window.innerWidth - 280);
+    return Math.max(minWidth, Math.min(Math.min(maxWidth, maxByViewport), width));
+  }
+
+  function applySidebarWidth(width){
+    const clamped = Math.round(clampSidebarWidth(width));
+    app.style.setProperty("--sidebar-width", `${clamped}px`);
+    try{
+      localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped));
+    }catch(_err){}
+  }
+
+  try{
+    const raw = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
+    if(Number.isFinite(raw) && raw > 0) applySidebarWidth(raw);
+  }catch(_err){}
+
+  let dragging = false;
+  let startX = 0;
+  let startWidth = 0;
+
+  splitter.addEventListener("mousedown", (e)=>{
+    if(e.button !== 0) return;
+    dragging = true;
+    startX = e.clientX;
+    startWidth = sidebar.getBoundingClientRect().width;
+    document.body.classList.add("resizing");
+    e.preventDefault();
+  });
+
+  window.addEventListener("mousemove", (e)=>{
+    if(!dragging) return;
+    applySidebarWidth(startWidth + (e.clientX - startX));
+  });
+
+  window.addEventListener("mouseup", ()=>{
+    if(!dragging) return;
+    dragging = false;
+    document.body.classList.remove("resizing");
+  });
+
+  splitter.addEventListener("dblclick", ()=>{
+    applySidebarWidth(340);
+  });
+
+  window.addEventListener("resize", ()=>{
+    const raw = parseFloat(getComputedStyle(app).getPropertyValue("--sidebar-width"));
+    if(Number.isFinite(raw) && raw > 0) applySidebarWidth(raw);
+  });
 }
 
 function renderTileSelect(){
@@ -698,7 +2075,12 @@ function renderTilePalette(){
 
     const img = document.createElement("div");
     img.className = "img";
-    img.style.backgroundImage = `url(${tileImageUrl(id)})`;
+    if(state.simplifiedGraphics){
+      img.classList.add("simpleGraphic");
+      img.appendChild(makeTileImg(id));
+    }else{
+      img.style.backgroundImage = `url(${tileImageUrl(id)})`;
+    }
     d.appendChild(img);
 
     const badge = document.createElement("div");
@@ -769,16 +2151,77 @@ function buildBoardGrid(size=25){
 
 function clearSelection(){
   state.selectedCell = null;
-  state.hoverFeature = null;
+  clearHoverFeatureState();
   render();
 }
 
-function onCellClick(e, x, y){
+function onOnlineBoardCellClick(x, y){
+  if(!state.online.connected){
+    setStatus("Connect to the online server first.");
+    return;
+  }
   const k = keyXY(x,y);
 
   if(state.board.has(k)){
     state.selectedCell = k;
-    state.hoverFeature = null;
+    clearHoverFeatureState();
+    render();
+    setStatus("Tile selected. Tap a marker to inspect that connected feature.");
+    return;
+  }
+
+  if(!onlineMatchIsActive()){
+    setStatus("No active match. Invite a player from the lobby.");
+    return;
+  }
+  if(!state.online.match?.can_act){
+    setStatus("Wait for your turn.");
+    return;
+  }
+
+  const drawnTileId = state.online.match?.current_turn?.tile_id;
+  if(!drawnTileId){
+    setStatus("No tile assigned yet.");
+    return;
+  }
+
+  if(state.online.tileLocked){
+    const pk = state.online.pendingTile ? keyXY(state.online.pendingTile.x, state.online.pendingTile.y) : null;
+    if(pk && pk===k){
+      state.selectedCell = k;
+      render();
+      return;
+    }
+    setStatus("Tile is locked. Submit meeple/skip or reset tile.");
+    return;
+  }
+
+  const rot = state.selectedRot;
+  const ok = canPlaceAt(drawnTileId, rot, x, y);
+  if(!ok.ok){
+    setStatus(ok.reason);
+    return;
+  }
+
+  state.online.pendingTile = {x, y, rotDeg: rot, tileId: drawnTileId};
+  state.online.pendingMeepleFeatureId = null;
+  state.selectedCell = null;
+  render();
+  renderOnlineSidebar();
+  setStatus(`Prepared ${drawnTileId} at (${x},${y}) rot ${rot}°. Submit tile to continue.`);
+}
+
+function onCellClick(e, x, y){
+  if(isOnlineTab()){
+    onOnlineBoardCellClick(x, y);
+    return;
+  }
+
+  const k = keyXY(x,y);
+
+  if(state.board.has(k)){
+    state.selectedCell = k;
+    clearHoverFeatureState();
     render();
     return;
   }
@@ -810,6 +2253,10 @@ function onCellClick(e, x, y){
 
 function onCellRightClick(e, x, y){
   e.preventDefault();
+  if(isOnlineTab()){
+    setStatus("Tile removal is disabled in online matches.");
+    return;
+  }
   const k = keyXY(x,y);
   if(!state.board.has(k)) return;
 
@@ -824,7 +2271,7 @@ function onCellRightClick(e, x, y){
 
   recomputeAndScore(true);
   if(state.selectedCell===k) state.selectedCell=null;
-  state.hoverFeature = null;
+  clearHoverFeatureState();
 
   renderTileSelect();
   renderTilePalette();
@@ -835,8 +2282,13 @@ function onCellRightClick(e, x, y){
 function playerTint(alpha){
   // Color the highlight by currently selected player (placement intent)
   return (state.selectedPlayer===1)
-    ? `rgba(80,160,255,${alpha})`   // P1 blue
-    : `rgba(255,90,90,${alpha})`;   // P2 red
+    ? `rgba(40,155,255,${alpha})`   // P1 blue
+    : `rgba(255,70,70,${alpha})`;   // P2 red
+}
+
+function highlightTint(alpha, tone=null){
+  if(tone==="neutral") return `rgba(255, 216, 92, ${alpha})`;
+  return playerTint(alpha);
 }
 
 function featureColor(type){
@@ -846,35 +2298,39 @@ function featureColor(type){
 
 
 
-function addFeatureAreaOverlay(tileDiv, tileId, localIds, type){
+function addFeatureAreaOverlay(tileDiv, tileId, localIds, type, mode="hover", tone=null){
+  if(state.simplifiedGraphics){
+    const ok = addFeatureAreaOverlayFromSimplified(tileDiv, tileId, localIds, mode, tone);
+    if(ok) return;
+  }
   if(!state.areasBase && !state.areasOverride) return;
 
   const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
   svg.setAttribute("viewBox","0 0 100 100");
-  svg.setAttribute("class","areaSvg");
+  svg.setAttribute("class", `areaSvg ${mode==="score" ? "score" : "hover"}`);
   svg.style.position="absolute";
   svg.style.inset="0";
   svg.style.pointerEvents="none";
 
-  const fillBase = playerTint(0.16);
-  const lineCol  = playerTint(0.55);
-  const stroke   = playerTint(0.70);
+  const fillBase = highlightTint(mode==="score" ? 0.48 : 0.40, tone);
+  const lineCol  = highlightTint(mode==="score" ? 0.98 : 0.92, tone);
+  const stroke   = highlightTint(mode==="score" ? 1.00 : 0.96, tone);
 
   const defs = document.createElementNS("http://www.w3.org/2000/svg","defs");
 
-  const pid = `hatch_${tileId}_${state.selectedPlayer}`;
+  const pid = `hatch_${mode}_${tileId}_${state.selectedPlayer}_${tone || "player"}`;
   const pat = document.createElementNS("http://www.w3.org/2000/svg","pattern");
   pat.setAttribute("id", pid);
   pat.setAttribute("patternUnits","userSpaceOnUse");
-  pat.setAttribute("width","6");
-  pat.setAttribute("height","6");
+  pat.setAttribute("width","5");
+  pat.setAttribute("height","5");
   pat.setAttribute("patternTransform","rotate(45)");
 
   const line = document.createElementNS("http://www.w3.org/2000/svg","line");
   line.setAttribute("x1","0"); line.setAttribute("y1","0");
-  line.setAttribute("x2","0"); line.setAttribute("y2","6");
+  line.setAttribute("x2","0"); line.setAttribute("y2","5");
   line.setAttribute("stroke", lineCol);
-  line.setAttribute("stroke-width","2");
+  line.setAttribute("stroke-width","2.4");
   pat.appendChild(line);
 
   defs.appendChild(pat);
@@ -892,7 +2348,7 @@ function addFeatureAreaOverlay(tileDiv, tileId, localIds, type){
       pg0.setAttribute("points", pts);
       pg0.setAttribute("fill", fillBase);
       pg0.setAttribute("stroke", stroke);
-      pg0.setAttribute("stroke-width", "0.9");
+      pg0.setAttribute("stroke-width", "1.2");
       svg.appendChild(pg0);
 
       // hatching overlay
@@ -907,11 +2363,47 @@ function addFeatureAreaOverlay(tileDiv, tileId, localIds, type){
   tileDiv.appendChild(svg);
 }
 
+function addCityBoundaryOverlay(tileDiv, tileId, localIds){
+  if(state.simplifiedGraphics){
+    const ok = addCityBoundaryOverlayFromSimplified(tileDiv, tileId, localIds);
+    if(ok) return;
+  }
+  if(!state.areasBase && !state.areasOverride) return;
+  if(!localIds || localIds.size===0) return;
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("viewBox","0 0 100 100");
+  svg.setAttribute("class","areaSvg cityBoundarySvg");
+  svg.style.position = "absolute";
+  svg.style.inset = "0";
+  svg.style.pointerEvents = "none";
+
+  for(const lid of localIds){
+    const feat = getAreaFeature(tileId, lid);
+    if(!feat) continue;
+    for(const poly of (feat.polygons || [])){
+      const pts = (poly||[]).map(p=>`${p[0]*100},${p[1]*100}`).join(" ");
+      const pg = document.createElementNS("http://www.w3.org/2000/svg","polygon");
+      pg.setAttribute("points", pts);
+      pg.setAttribute("fill", "none");
+      pg.setAttribute("stroke", "rgba(0,0,0,0.90)");
+      pg.setAttribute("stroke-width", "1.35");
+      pg.setAttribute("stroke-dasharray", "4 3");
+      pg.setAttribute("stroke-linejoin", "round");
+      svg.appendChild(pg);
+    }
+  }
+
+  tileDiv.appendChild(svg);
+}
+
 
 function render(){
   const boardEl = $("#board");
   const size = Math.sqrt(boardEl.children.length) | 0;
   const half = Math.floor(size/2);
+  const analysisForScore = analyzeBoard();
+  syncSelectedScoreFeatureFromAnalysis(analysisForScore);
 
   for(const cell of boardEl.children) cell.innerHTML = "";
 
@@ -930,6 +2422,22 @@ function render(){
     tileDiv.appendChild(makeTileImg(inst.tileId));
     cell.appendChild(tileDiv);
     tileDivByCell.set(k, tileDiv);
+
+    if(state.selectedScoreFeature && state.selectedScoreFeature.tiles.has(k)){
+      tileDiv.classList.add("scoreHl");
+      if(state.selectedScoreTone==="neutral") tileDiv.classList.add("neutral");
+      const scoreLocalIds = state.selectedScoreFeature.featureIdsByCell.get(k);
+      if(scoreLocalIds){
+        addFeatureAreaOverlay(
+          tileDiv,
+          inst.tileId,
+          scoreLocalIds,
+          state.selectedScoreFeature.type,
+          "score",
+          state.selectedScoreTone
+        );
+      }
+    }
 // Polygon area highlight (per feature local-id) + tile tint
     if(state.hoverFeature && state.hoverFeature.tiles.has(k)){
       tileDiv.classList.add("hl");
@@ -947,15 +2455,61 @@ function render(){
       const [px,py] = feat.meeple_placement;
       const mee = document.createElement("div");
       mee.className = `meeple ${m.player===1?"p1":"p2"}`;
+      const nodeKey = `${inst.instId}:${m.featureLocalId}`;
+      if(state.selectedScoreFeature?.nodeKeys?.has(nodeKey)){
+        mee.classList.add("scoreSel");
+      }
       mee.style.left = `${px*100}%`;
       mee.style.top = `${py*100}%`;
       tileDiv.appendChild(mee);
     }
 
+    if(state.selectedScoreFeature?.type==="field"){
+      const cityIds = state.selectedScoreFeature.cityFeatureIdsByCell?.get(k);
+      if(cityIds && cityIds.size){
+        addCityBoundaryOverlay(tileDiv, inst.tileId, cityIds);
+      }
+
+      const labels = state.selectedScoreFeature.cityLabelsByCell?.get(k) || [];
+      for(const lbl of labels){
+        const tag = document.createElement("div");
+        tag.className = "cityRefLabel";
+        tag.textContent = String(lbl.number);
+        tag.style.left = `${lbl.pt[0]*100}%`;
+        tag.style.top = `${lbl.pt[1]*100}%`;
+        tileDiv.appendChild(tag);
+      }
+    }
+
     // Selection markers
     if(state.selectedCell === k){
       tileDiv.classList.add("selected");
-      renderFeatureMarkers(tileDiv, k, inst);
+      renderFeatureMarkers(tileDiv, k, inst, isOnlineTab());
+    }
+  }
+
+  // Online pending tile (local pre-submit state).
+  if(isOnlineTab() && state.online.pendingTile){
+    const p = state.online.pendingTile;
+    const pk = keyXY(p.x, p.y);
+    if(!state.board.has(pk)){
+      const col = p.x + half;
+      const row = p.y + half;
+      const idx = row*size + col;
+      const cell = boardEl.children[idx];
+      if(cell){
+        const tileDiv = document.createElement("div");
+        tileDiv.className = "tile pending";
+        if(state.online.tileLocked) tileDiv.classList.add("locked");
+        tileDiv.style.transform = `rotate(${p.rotDeg}deg)`;
+        tileDiv.appendChild(makeTileImg(p.tileId));
+        cell.appendChild(tileDiv);
+        tileDivByCell.set(pk, tileDiv);
+        if(state.online.tileLocked){
+          tileDiv.classList.add("selected");
+          renderOnlinePendingMeepleMarkers(tileDiv, p);
+        }
+      }
     }
   }
 
@@ -974,9 +2528,10 @@ function render(){
   }
 
   // Ghost tile
-  if(state.hoverCell){
+  if(state.hoverCell && !(isOnlineTab() && state.online.tileLocked)){
     const {x,y} = parseXY(state.hoverCell);
-    if(!state.board.has(state.hoverCell)){
+    const pendingKey = state.online.pendingTile ? keyXY(state.online.pendingTile.x, state.online.pendingTile.y) : null;
+    if(!state.board.has(state.hoverCell) && (!pendingKey || pendingKey!==state.hoverCell)){
       const col = x + half;
       const row = y + half;
       const idx = row*size + col;
@@ -993,10 +2548,53 @@ const ok = canPlaceAt(state.selectedTileId, state.selectedRot, x, y);
     }
   }
 
-  renderScores();
+  renderScores(analysisForScore);
+  if(isOnlineTab()) renderOnlineScorePanel(analysisForScore);
 }
 
-function renderFeatureMarkers(tileDiv, cellKey, inst){
+function renderOnlinePendingMeepleMarkers(tileDiv, pendingTile){
+  const tile = rotatedTile(pendingTile.tileId, pendingTile.rotDeg);
+  for(const f of tile.features){
+    if(!["road","city","field","cloister"].includes(f.type)) continue;
+    const [px,py] = f.meeple_placement;
+    const mk = document.createElement("div");
+    mk.className = "marker";
+    mk.dataset.type = f.type;
+    mk.title = `Select meeple on ${f.type} (${f.id})`;
+    mk.style.left = `${px*100}%`;
+    mk.style.top = `${py*100}%`;
+
+    if(state.online.pendingMeepleFeatureId===f.id){
+      mk.style.outline = "2px solid rgba(255,225,120,0.95)";
+      mk.style.outlineOffset = "1px";
+    }
+
+    mk.addEventListener("click", (e)=>{
+      e.stopPropagation();
+      if(state.online.pendingMeepleFeatureId===f.id) state.online.pendingMeepleFeatureId = null;
+      else state.online.pendingMeepleFeatureId = f.id;
+      renderOnlineSidebar();
+      render();
+    });
+
+    tileDiv.appendChild(mk);
+  }
+
+  if(state.online.pendingMeepleFeatureId){
+    const feat = tile.features.find(f=>f.id===state.online.pendingMeepleFeatureId);
+    if(feat){
+      const [px,py] = feat.meeple_placement;
+      const you = Number(state.online.match?.you_player || 1);
+      const mee = document.createElement("div");
+      mee.className = `meeple ${you===2?"p2":"p1"}`;
+      mee.style.left = `${px*100}%`;
+      mee.style.top = `${py*100}%`;
+      tileDiv.appendChild(mee);
+    }
+  }
+}
+
+function renderFeatureMarkers(tileDiv, cellKey, inst, inspectOnly=false){
   const tile = rotatedTile(inst.tileId, inst.rotDeg);
   for(const f of tile.features){
     if(!["road","city","field","cloister"].includes(f.type)) continue;
@@ -1008,25 +2606,54 @@ function renderFeatureMarkers(tileDiv, cellKey, inst){
     mk.style.left = `${px*100}%`;
     mk.style.top = `${py*100}%`;
 
+    const markerKey = `${cellKey}:${f.id}`;
+
     mk.addEventListener("mouseenter", ()=>{
+      // Prevent hover-enter render loops that detach markers before click lands.
+      if(state.hoverMarkerKey===markerKey) return;
+      state.hoverMarkerKey = markerKey;
       state.hoverFeature = computeHoverFeature(cellKey, f.id);
       render();
     });
-    mk.addEventListener("mouseleave", ()=>{
-      state.hoverFeature = null;
+    mk.addEventListener("mouseleave", (ev)=>{
+      if(state.hoverMarkerKey!==markerKey) return;
+      // If pointer moved to another marker, let that marker handler own hover.
+      const nextMarker = ev.relatedTarget?.closest?.(".marker");
+      if(nextMarker) return;
+      clearHoverFeatureState();
       render();
     });
 
     mk.addEventListener("click", (e)=>{
       e.stopPropagation();
-      placeOrRemoveMeeple(cellKey, inst, f.id);
+      if(inspectOnly) onlineInspectFeature(cellKey, f.id);
+      else placeOrRemoveMeeple(cellKey, inst, f.id);
     });
 
     tileDiv.appendChild(mk);
   }
 }
 
+function onlineInspectFeature(cellKey, localFeatureId){
+  const analysis = analyzeBoard();
+  const inst = state.board.get(cellKey);
+  if(!inst) return;
+  const nodeKey = `${inst.instId}:${localFeatureId}`;
+  if(!analysis.nodeMeta.has(nodeKey)) return;
+  const root = analysis.uf.find(nodeKey);
+  const group = analysis.groups.get(root);
+  if(!group) return;
+  const groupByKey = new Map();
+  for(const g of analysis.groups.values()) groupByKey.set(g.key, g);
+  state.selectedScoreKey = group.key;
+  state.selectedScoreTone = "neutral";
+  state.selectedScoreFeature = buildScoreSelectionFeature(analysis, group, groupByKey);
+  render();
+  setStatus(`Inspecting ${group.type} feature ${localFeatureId} (neutral highlight).`);
+}
+
 function placeOrRemoveMeeple(cellKey, inst, featureLocalId){
+  if(isOnlineTab()) return;
   pushUndo();
 
   const existingIdx = inst.meeples.findIndex(m => m.player===state.selectedPlayer && m.featureLocalId===featureLocalId);
@@ -1157,6 +2784,89 @@ function scoreFeature(group, completed){
   return 0;
 }
 
+function stableGroupKey(group){
+  return `${group.type}|${Array.from(group.nodes).sort().join(";")}`;
+}
+
+function masksTouch(maskA, maskB, N, reach=1){
+  for(let y=0; y<N; y++){
+    const yoff = y*N;
+    for(let x=0; x<N; x++){
+      const i = yoff + x;
+      if(!maskA[i]) continue;
+      const y0 = Math.max(0, y-reach), y1 = Math.min(N-1, y+reach);
+      const x0 = Math.max(0, x-reach), x1 = Math.min(N-1, x+reach);
+      for(let yy=y0; yy<=y1; yy++){
+        const yyoff = yy*N;
+        for(let xx=x0; xx<=x1; xx++){
+          if(maskB[yyoff + xx]) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function fieldTouchesCityByPorts(fieldPortsSet, cityPorts){
+  for(const edge of (cityPorts||[])){
+    const candidates = CITY_EDGE_TO_ADJ_FIELD_PORTS[edge];
+    if(!candidates) continue;
+    for(const p of candidates){
+      if(fieldPortsSet.has(p)) return true;
+    }
+  }
+  return false;
+}
+
+function getFieldCityAdjacencyForTile(tileId){
+  if(fieldCityAdjCache.has(tileId)) return fieldCityAdjCache.get(tileId);
+
+  const feats = mergedFeaturesForTile(tileId).filter(f=>f.type==="field" || f.type==="city");
+  const fields = feats.filter(f=>f.type==="field");
+  const cities = feats.filter(f=>f.type==="city");
+  const out = new Map();
+
+  if(fields.length===0 || cities.length===0){
+    fieldCityAdjCache.set(tileId, out);
+    return out;
+  }
+
+  const N = 96;
+  const masksById = new Map();
+  for(const f of feats){
+    const area = getAreaFeature(tileId, f.id);
+    const polys = Array.isArray(area?.polygons) ? area.polygons : [];
+    if(!polys.length) continue;
+    const mask = new Uint8Array(N*N);
+    rasterizePolygonsToMask(polys, mask, N);
+    masksById.set(f.id, mask);
+  }
+
+  for(const ff of fields){
+    const fieldPorts = new Set(ff.ports || []);
+    const hits = new Set();
+    const fMask = masksById.get(ff.id);
+
+    for(const cc of cities){
+      let adjacent = false;
+      const cMask = masksById.get(cc.id);
+
+      if(fMask && cMask){
+        adjacent = masksTouch(fMask, cMask, N, 1);
+      }
+      if(!adjacent){
+        adjacent = fieldTouchesCityByPorts(fieldPorts, cc.ports || []);
+      }
+      if(adjacent) hits.add(cc.id);
+    }
+
+    if(hits.size) out.set(ff.id, hits);
+  }
+
+  fieldCityAdjCache.set(tileId, out);
+  return out;
+}
+
 function analyzeBoard(){
   const uf = new UnionFind();
   const nodeMeta = new Map();
@@ -1250,11 +2960,15 @@ function analyzeBoard(){
   }
 
   for(const g of groups.values()){
+    g.key = stableGroupKey(g);
+  }
+
+  for(const g of groups.values()){
     if(g.type==="road" || g.type==="city"){
       const open = new Set();
       for(const nodeKey of g.nodes){
         const meta = nodeMeta.get(nodeKey);
-        const {cellKey, instId} = meta;
+        const {cellKey} = meta;
         const {x,y} = parseXY(cellKey);
 
         for(const edge of meta.ports){
@@ -1277,12 +2991,17 @@ function analyzeBoard(){
       }
       g.openPorts = open;
       g.complete = (open.size===0);
-      g.key = `${g.type}|${Array.from(g.tiles).sort((a,b)=>a-b).join(",")}`;
+      continue;
     }
-    else if(g.type==="cloister"){
+
+    if(g.type==="cloister"){
       const only = Array.from(g.tiles)[0];
       const cellKey = instById.get(only)?.cellKey;
-      g.key = `cloister|${cellKey}`;
+      if(!cellKey){
+        g.adjacentCount = 0;
+        g.complete = false;
+        continue;
+      }
       const {x,y} = parseXY(cellKey);
       let cnt=0;
       for(let dy=-1; dy<=1; dy++){
@@ -1294,28 +3013,26 @@ function analyzeBoard(){
       g.adjacentCount = cnt;
       g.complete = (cnt===8);
     }
-    else if(g.type==="field"){
-      g.key = `field|${Array.from(g.tiles).sort((a,b)=>a-b).join(",")}|${g.nodes.size}`;
-      // Approx farm adjacency to completed cities using edge-city corners
-      for(const nodeKey of g.nodes){
-        const meta = nodeMeta.get(nodeKey);
-        const inst = state.board.get(meta.cellKey);
-        if(!inst) continue;
-        const tile = rotatedTile(inst.tileId, inst.rotDeg);
-        const look = perTileLookup.get(meta.instId);
+  }
 
-        for(const fp of meta.ports){
-          const edge = fp[0];
-          if(tile.edges[edge]?.primary==="city"){
-            const cityLocal = look.cityEdge[edge];
-            if(!cityLocal) continue;
-            const cityNodeKey = `${meta.instId}:${cityLocal}`;
-            const cityRoot = uf.find(cityNodeKey);
-            const cityGroup = groups.get(cityRoot);
-            if(cityGroup && cityGroup.type==="city" && cityGroup.complete){
-              g.adjCompletedCities.add(cityGroup.key);
-            }
-          }
+  for(const g of groups.values()){
+    if(g.type!=="field") continue;
+
+    // Farm adjacency to completed cities based on per-tile field/city area contact.
+    for(const nodeKey of g.nodes){
+      const meta = nodeMeta.get(nodeKey);
+      const inst = state.board.get(meta.cellKey);
+      if(!inst) continue;
+      const tileAdj = getFieldCityAdjacencyForTile(inst.tileId);
+      const cityLocals = tileAdj.get(meta.localId);
+      if(!cityLocals) continue;
+
+      for(const cityLocal of cityLocals){
+        const cityNodeKey = `${meta.instId}:${cityLocal}`;
+        const cityRoot = uf.find(cityNodeKey);
+        const cityGroup = groups.get(cityRoot);
+        if(cityGroup && cityGroup.type==="city" && cityGroup.complete){
+          g.adjCompletedCities.add(cityGroup.key);
         }
       }
     }
@@ -1347,58 +3064,869 @@ function connectFieldHalves(uf, instA, lookA, halfA, instB, lookB, halfB){
   }
 }
 
-function renderScores(){
-  const analysis = analyzeBoard();
+function winnersOfGroup(g){
+  const m1 = g.meeplesByPlayer[1]||0;
+  const m2 = g.meeplesByPlayer[2]||0;
+  const max = Math.max(m1,m2);
+  if(max<=0) return [];
+  const ws=[];
+  if(m1===max) ws.push(1);
+  if(m2===max) ws.push(2);
+  return ws;
+}
+
+function addFeatureIdForCell(featureIdsByCell, cellKey, localId){
+  if(!featureIdsByCell.has(cellKey)) featureIdsByCell.set(cellKey, new Set());
+  featureIdsByCell.get(cellKey).add(localId);
+}
+
+function scoreEndNowValue(g){
+  if(g.type==="city") return g.complete ? scoreFeature(g,true) : scoreFeature(g,false);
+  if(g.type==="road") return scoreFeature(g,true);
+  if(g.type==="cloister") return scoreFeature(g,false);
+  if(g.type==="field") return scoreFeature(g,false);
+  return 0;
+}
+
+function groupStatusText(g){
+  if(g.type==="field") return `${g.adjCompletedCities.size} completed ${g.adjCompletedCities.size===1?"city":"cities"}`;
+  if(g.type==="cloister") return `${g.adjacentCount}/8 neighbors`;
+  if(g.complete) return "complete";
+  return `${g.openPorts.size} open edge${g.openPorts.size===1?"":"s"}`;
+}
+
+function escHtml(str){
+  return String(str).replace(/[&<>"']/g, (ch)=>(
+    ch==="&" ? "&amp;" :
+    ch==="<" ? "&lt;" :
+    ch===">" ? "&gt;" :
+    ch==="\"" ? "&quot;" : "&#39;"
+  ));
+}
+
+function buildScoreSelectionFeature(analysis, group, groupByKey){
+  if(!group) return null;
+
+  const tiles = new Set();
+  const markers = [];
+  const featureIdsByCell = new Map();
+  const nodeKeys = new Set();
+
+  for(const nodeKey of group.nodes){
+    const meta = analysis.nodeMeta.get(nodeKey);
+    if(!meta) continue;
+    nodeKeys.add(nodeKey);
+    tiles.add(meta.cellKey);
+    addFeatureIdForCell(featureIdsByCell, meta.cellKey, meta.localId);
+    markers.push({cellKey: meta.cellKey, type: meta.type, pt: meta.meeplePlacement});
+  }
+
+  const out = {
+    key: group.key,
+    type: group.type,
+    tiles,
+    markers,
+    featureIdsByCell,
+    nodeKeys,
+    cityFeatureIdsByCell: new Map(),
+    cityLabelsByCell: new Map()
+  };
+
+  if(group.type!=="field") return out;
+
+  const cityKeys = Array.from(group.adjCompletedCities).sort();
+  let num = 1;
+  for(const cityKey of cityKeys){
+    const cityGroup = groupByKey.get(cityKey);
+    if(!cityGroup || cityGroup.type!=="city") continue;
+
+    const cityMetas = [];
+    for(const nodeKey of cityGroup.nodes){
+      const meta = analysis.nodeMeta.get(nodeKey);
+      if(!meta) continue;
+      cityMetas.push(meta);
+      tiles.add(meta.cellKey);
+      addFeatureIdForCell(out.cityFeatureIdsByCell, meta.cellKey, meta.localId);
+    }
+    if(!cityMetas.length) continue;
+
+    let cx=0, cy=0;
+    for(const meta of cityMetas){
+      const pos = parseXY(meta.cellKey);
+      cx += pos.x;
+      cy += pos.y;
+    }
+    cx /= cityMetas.length;
+    cy /= cityMetas.length;
+
+    let best = cityMetas[0];
+    let bestD = Infinity;
+    for(const meta of cityMetas){
+      const pos = parseXY(meta.cellKey);
+      const d = (pos.x-cx)*(pos.x-cx) + (pos.y-cy)*(pos.y-cy);
+      if(d<bestD){
+        bestD = d;
+        best = meta;
+      }
+    }
+
+    if(!out.cityLabelsByCell.has(best.cellKey)) out.cityLabelsByCell.set(best.cellKey, []);
+    out.cityLabelsByCell.get(best.cellKey).push({
+      number: num,
+      pt: Array.isArray(best.meeplePlacement) ? best.meeplePlacement : [0.5,0.5]
+    });
+    num++;
+  }
+
+  return out;
+}
+
+function syncSelectedScoreFeatureFromAnalysis(analysis){
+  const groupByKey = new Map();
+  for(const g of analysis.groups.values()) groupByKey.set(g.key, g);
+
+  if(state.selectedScoreKey && !groupByKey.has(state.selectedScoreKey)){
+    clearSelectedScoreState();
+  }
+  if(state.selectedScoreKey){
+    state.selectedScoreFeature = buildScoreSelectionFeature(
+      analysis,
+      groupByKey.get(state.selectedScoreKey),
+      groupByKey
+    );
+  }else{
+    state.selectedScoreFeature = null;
+  }
+  return groupByKey;
+}
+
+function setSelectedScoreKey(scoreKey, tone=null){
+  if(state.selectedScoreKey===scoreKey && state.selectedScoreTone===tone){
+    clearSelectedScoreState();
+  }else{
+    state.selectedScoreKey = scoreKey;
+    state.selectedScoreTone = tone;
+  }
+  render();
+}
+
+function renderScores(analysis){
+  const boardAnalysis = analysis || analyzeBoard();
+  if(!analysis) syncSelectedScoreFeatureFromAnalysis(boardAnalysis);
 
   const endNow = {1:0, 2:0};
   const ifCompleteNow = {1:0, 2:0};
+  const entriesByType = { city: [], road: [], cloister: [], field: [] };
+  const typeTotals = {
+    city: {1:0,2:0},
+    road: {1:0,2:0},
+    cloister: {1:0,2:0},
+    field: {1:0,2:0}
+  };
+  const typeSeq = {city:0, road:0, cloister:0, field:0};
 
-  function winnersOf(g){
-    const m1 = g.meeplesByPlayer[1]||0;
-    const m2 = g.meeplesByPlayer[2]||0;
-    const max = Math.max(m1,m2);
-    if(max<=0) return [];
-    const ws=[];
-    if(m1===max) ws.push(1);
-    if(m2===max) ws.push(2);
-    return ws;
-  }
-
-  for(const g of analysis.groups.values()){
-    const ws = winnersOf(g);
+  for(const g of boardAnalysis.groups.values()){
+    const ws = winnersOfGroup(g);
     if(ws.length===0) continue;
 
     if(g.type==="road" || g.type==="city" || g.type==="cloister"){
       if(!g.complete){
-        const ptsEnd = (g.type==="city") ? scoreFeature(g,false) :
-                       (g.type==="cloister") ? scoreFeature(g,false) :
-                       scoreFeature(g,true);
+        const ptsEnd = scoreEndNowValue(g);
         for(const w of ws) endNow[w] += ptsEnd;
 
-        let ptsComp = 0;
-        if(g.type==="city") ptsComp = scoreFeature(g,true);
-        else if(g.type==="road") ptsComp = scoreFeature(g,true);
-        else if(g.type==="cloister") ptsComp = 9;
+        const ptsComp = (g.type==="cloister") ? 9 : scoreFeature(g,true);
         for(const w of ws) ifCompleteNow[w] += ptsComp;
       }
     }else if(g.type==="field"){
       const ptsFarm = scoreFeature(g,false);
       for(const w of ws) endNow[w] += ptsFarm;
     }
+
+    if(!(g.type in entriesByType)) continue;
+    typeSeq[g.type] += 1;
+
+    const ptsEnd = scoreEndNowValue(g);
+    const p1End = ws.includes(1) ? ptsEnd : 0;
+    const p2End = ws.includes(2) ? ptsEnd : 0;
+    typeTotals[g.type][1] += p1End;
+    typeTotals[g.type][2] += p2End;
+
+    let info = `tiles ${g.tiles.size}`;
+    if(g.type==="city") info += `, pennants ${g.pennants}`;
+    if(g.type==="field") info += `, completed cities ${g.adjCompletedCities.size}`;
+    if(g.type==="cloister") info += `, neighbors ${g.adjacentCount}/8`;
+    info += `, meeples ${g.meeplesByPlayer[1]||0}/${g.meeplesByPlayer[2]||0}`;
+
+    entriesByType[g.type].push({
+      key: g.key,
+      idx: typeSeq[g.type],
+      status: groupStatusText(g),
+      info,
+      p1End,
+      p2End
+    });
   }
 
+  const finalNow = {
+    1: state.score[1] + endNow[1],
+    2: state.score[2] + endNow[2]
+  };
+
+  const TYPE_LABEL = { city:"City", road:"Road", cloister:"Cloister", field:"Field" };
+  const typeSections = ["city","road","cloister","field"].map((type)=>{
+    const entries = entriesByType[type];
+    const openAttr = state.scoreDetailsOpen[type] ? " open" : "";
+
+    const rows = entries.length===0
+      ? `<tr><td colspan="6" class="muted">No claimed ${type} features on map.</td></tr>`
+      : entries.map((entry)=>{
+          const active = state.selectedScoreKey===entry.key ? " active" : "";
+          return `
+            <tr class="scoreEntryRow${active}" data-score-key="${escHtml(entry.key)}" tabindex="0">
+              <td class="mono">${entry.idx}</td>
+              <td>${escHtml(entry.status)}</td>
+              <td class="mono">${entry.p1End ? "+"+entry.p1End : "0"}</td>
+              <td class="mono">${entry.p2End ? "+"+entry.p2End : "0"}</td>
+              <td>${escHtml(entry.info)}</td>
+              <td class="mono">${escHtml(entry.key)}</td>
+            </tr>`;
+        }).join("");
+
+    return `
+      <details class="scoreTypeBlock" data-score-type="${type}"${openAttr}>
+        <summary>${TYPE_LABEL[type]} (entries: ${entries.length}) — P1:+${typeTotals[type][1]} / P2:+${typeTotals[type][2]}</summary>
+        <table class="scoreTable scoreDetailsTable">
+          <thead>
+            <tr><th>#</th><th>Status</th><th>P1 End</th><th>P2 End</th><th>Info</th><th>Key</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </details>`;
+  }).join("");
+
   $("#scoreBox").innerHTML = `
-    <table class="scoreTable">
+    <table class="scoreTable scoreSummaryTable">
       <thead>
-        <tr><th></th><th>Score</th><th>End-if-now</th><th>If-complete-now</th></tr>
+        <tr><th></th><th>Current Score</th><th>End-if-now Bonus</th><th>If-complete-now Bonus</th><th>Final-if-now</th></tr>
       </thead>
       <tbody>
-        <tr><td class="mono">P1 (Blue)</td><td class="mono">${state.score[1]}</td><td class="mono">+${endNow[1]}</td><td class="mono">+${ifCompleteNow[1]}</td></tr>
-        <tr><td class="mono">P2 (Red)</td><td class="mono">${state.score[2]}</td><td class="mono">+${endNow[2]}</td><td class="mono">+${ifCompleteNow[2]}</td></tr>
+        <tr><td class="mono">P1 (Blue)</td><td class="mono">${state.score[1]}</td><td class="mono">+${endNow[1]}</td><td class="mono">+${ifCompleteNow[1]}</td><td class="mono">${finalNow[1]}</td></tr>
+        <tr><td class="mono">P2 (Red)</td><td class="mono">${state.score[2]}</td><td class="mono">+${endNow[2]}</td><td class="mono">+${ifCompleteNow[2]}</td><td class="mono">${finalNow[2]}</td></tr>
       </tbody>
-    </table>`;
+    </table>
+    <div class="scoreTypeList">${typeSections}</div>`;
+
+  const scoreBox = $("#scoreBox");
+  if(!scoreBox) return;
+
+  for(const det of scoreBox.querySelectorAll("details.scoreTypeBlock")){
+    det.addEventListener("toggle", ()=>{
+      const type = det.dataset.scoreType;
+      if(type && type in state.scoreDetailsOpen){
+        state.scoreDetailsOpen[type] = det.open;
+      }
+    });
+  }
+  for(const row of scoreBox.querySelectorAll(".scoreEntryRow")){
+    const key = row.dataset.scoreKey;
+    if(!key) continue;
+    row.addEventListener("click", ()=>setSelectedScoreKey(key));
+    row.addEventListener("keydown", (e)=>{
+      if(e.key!=="Enter" && e.key!==" ") return;
+      e.preventDefault();
+      setSelectedScoreKey(key);
+    });
+  }
 }
 
+// -------------------- Online lobby/match --------------------
+const ONLINE_NAME_STORAGE_KEY = "carc_online_name_v1";
+
+async function onlineApiGet(path){
+  const res = await fetch(path, {cache:"no-store"});
+  let payload = null;
+  try{ payload = await res.json(); }catch(_err){ payload = null; }
+  if(!res.ok || !payload?.ok){
+    throw new Error(payload?.error || `HTTP ${res.status}`);
+  }
+  return payload;
+}
+
+async function onlineApiPost(path, body){
+  const res = await fetch(path, {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify(body || {})
+  });
+  let payload = null;
+  try{ payload = await res.json(); }catch(_err){ payload = null; }
+  if(!res.ok || !payload?.ok){
+    throw new Error(payload?.error || `HTTP ${res.status}`);
+  }
+  return payload;
+}
+
+function onlineStopLoops(){
+  if(state.online.pollTimer){
+    clearInterval(state.online.pollTimer);
+    state.online.pollTimer = null;
+  }
+  if(state.online.hbTimer){
+    clearInterval(state.online.hbTimer);
+    state.online.hbTimer = null;
+  }
+}
+
+function onlineStartLoops(){
+  onlineStopLoops();
+  state.online.pollTimer = setInterval(()=>{
+    onlinePoll().catch((err)=>{
+      setStatus(`Online sync error: ${err?.message || err}`);
+    });
+  }, 1200);
+  state.online.hbTimer = setInterval(()=>{
+    onlineHeartbeat().catch(()=>{});
+  }, 10000);
+}
+
+async function onlineHeartbeat(){
+  if(!state.online.connected || !state.online.token) return;
+  try{
+    await onlineApiPost("/api/session/heartbeat", {token: state.online.token});
+  }catch(err){
+    if(/token|session/i.test(String(err?.message || ""))){
+      await onlineDisconnect(false);
+    }
+  }
+}
+
+async function onlineConnect(){
+  if(state.online.connected) return;
+  const input = $("#onlineNameInput");
+  const name = (input?.value || "").trim();
+  if(!name){
+    setStatus("Enter your name to connect.");
+    return;
+  }
+
+  const payload = await onlineApiPost("/api/session/join", {name});
+  state.online.connected = true;
+  state.online.token = payload.token;
+  state.online.userId = payload.user?.id || null;
+  state.online.userName = payload.user?.name || name;
+  state.online.lobby = payload.lobby || null;
+  state.online.match = null;
+  state.online.pollBusy = false;
+  state.online.matchRenderSig = null;
+  clearOnlinePendingTurn();
+
+  try{ localStorage.setItem(ONLINE_NAME_STORAGE_KEY, state.online.userName); }catch(_err){}
+
+  if(isOnlineTab()) captureLocalStateForOnline();
+
+  onlineStartLoops();
+  await onlinePoll(true);
+  renderOnlineSidebar();
+  if(isOnlineTab()) renderOnlineScorePanel();
+  setStatus(`Connected as ${state.online.userName}.`);
+}
+
+async function onlineDisconnect(sendLeave=true){
+  const hadConnection = state.online.connected;
+  const token = state.online.token;
+
+  if(sendLeave && hadConnection && token){
+    try{ await onlineApiPost("/api/session/leave", {token}); }catch(_err){}
+  }
+
+  onlineStopLoops();
+  state.online.connected = false;
+  state.online.token = null;
+  state.online.userId = null;
+  state.online.userName = "";
+  state.online.lobby = null;
+  state.online.match = null;
+  state.online.pollBusy = false;
+  state.online.matchRenderSig = null;
+  clearOnlinePendingTurn();
+
+  if(isOnlineTab()){
+    applyOnlineMatchToBoardState();
+    renderOnlineSidebar();
+    renderOnlineScorePanel();
+  }
+  if(hadConnection) setStatus("Disconnected from online server.");
+}
+
+async function onlinePoll(force=false){
+  if(!state.online.connected || !state.online.token) return;
+  if(state.online.pollBusy && !force) return;
+
+  state.online.pollBusy = true;
+  try{
+    const lobby = await onlineApiGet(`/api/lobby?token=${encodeURIComponent(state.online.token)}`);
+    state.online.lobby = lobby;
+
+    if(lobby.current_match_id){
+      const mres = await onlineApiGet(`/api/match?token=${encodeURIComponent(state.online.token)}`);
+      state.online.match = mres.match || null;
+    }else{
+      state.online.match = null;
+      clearOnlinePendingTurn();
+    }
+
+    if(state.online.match?.status!=="active"){
+      clearOnlinePendingTurn();
+    }else{
+      const turnTile = state.online.match?.current_turn?.tile_id;
+      if(turnTile){
+        state.selectedTileId = turnTile;
+        updateTilePreview();
+      }
+      if(!state.online.match?.can_act){
+        clearOnlinePendingTurn();
+      }
+    }
+
+    const nextSig = onlineMatchSignature(state.online.match);
+    const sigChanged = nextSig !== state.online.matchRenderSig;
+    if(sigChanged) state.online.matchRenderSig = nextSig;
+
+    const preserveLocalPending =
+      !!state.online.pendingTile &&
+      state.online.match?.status==="active" &&
+      state.online.match?.can_act;
+
+    if(isOnlineTab() && (force || sigChanged) && !preserveLocalPending){
+      applyOnlineMatchToBoardState();
+    }
+    renderOnlineSidebar();
+    if(isOnlineTab()) renderOnlineScorePanel();
+  }catch(err){
+    const msg = String(err?.message || err || "unknown");
+    if(/token|session|unauthorized|401/i.test(msg)){
+      await onlineDisconnect(false);
+      setStatus("Online session expired. Connect again.");
+    }else{
+      setStatus(`Online sync error: ${msg}`);
+    }
+  }finally{
+    state.online.pollBusy = false;
+  }
+}
+
+async function onlineSendInvite(toUserId){
+  if(!state.online.connected) return;
+  try{
+    await onlineApiPost("/api/invite", {token: state.online.token, to_user_id: toUserId});
+    await onlinePoll(true);
+  }catch(err){
+    setStatus(`Invite failed: ${err?.message || err}`);
+  }
+}
+
+async function onlineRespondInvite(inviteId, action){
+  if(!state.online.connected) return;
+  try{
+    await onlineApiPost("/api/invite/respond", {
+      token: state.online.token,
+      invite_id: inviteId,
+      action
+    });
+    await onlinePoll(true);
+  }catch(err){
+    setStatus(`Invite response failed: ${err?.message || err}`);
+  }
+}
+
+async function onlineSendChat(){
+  if(!state.online.connected) return;
+  const input = $("#onlineChatInput");
+  const text = (input?.value || "").trim();
+  if(!text) return;
+  input.value = "";
+  try{
+    await onlineApiPost("/api/chat", {token: state.online.token, text});
+    await onlinePoll(true);
+  }catch(err){
+    setStatus(`Chat failed: ${err?.message || err}`);
+  }
+}
+
+function onlineMatchCanAct(){
+  return !!(state.online.connected && state.online.match?.status==="active" && state.online.match?.can_act);
+}
+
+function onlineMatchSignature(match){
+  if(!match) return "none";
+  const turn = match.current_turn || {};
+  const score = match.score || {};
+  const players = Array.isArray(match.players) ? match.players.map(p=>({
+    p: p.player,
+    s: p.score,
+    m: p.meeples_left
+  })) : [];
+  return JSON.stringify({
+    id: match.id,
+    st: match.status,
+    ti: turn.turn_index || 0,
+    tu: turn.user_id || "",
+    tt: turn.tile_id || "",
+    b: Array.isArray(match.board) ? match.board.length : 0,
+    rt: match.remaining_total || 0,
+    s1: Number(score["1"] ?? score[1] ?? 0),
+    s2: Number(score["2"] ?? score[2] ?? 0),
+    p: players,
+    e: match.last_event || ""
+  });
+}
+
+function onlineSubmitTileLocal(){
+  if(!onlineMatchCanAct()){
+    setStatus("It is not your turn.");
+    return;
+  }
+  if(!state.online.pendingTile){
+    setStatus("Place the drawn tile on the board first.");
+    return;
+  }
+  const p = state.online.pendingTile;
+  const ok = canPlaceAt(p.tileId, p.rotDeg, p.x, p.y);
+  if(!ok.ok){
+    setStatus(ok.reason);
+    return;
+  }
+  state.online.tileLocked = true;
+  state.selectedCell = keyXY(p.x, p.y);
+  renderOnlineSidebar();
+  render();
+}
+
+function onlineResetTileLocal(){
+  clearOnlinePendingTurn();
+  state.selectedCell = null;
+  clearHoverFeatureState();
+  renderOnlineSidebar();
+  render();
+}
+
+async function onlineSubmitTurn(skipMeeple){
+  if(!onlineMatchCanAct()){
+    setStatus("It is not your turn.");
+    return;
+  }
+  if(!state.online.pendingTile || !state.online.tileLocked){
+    setStatus("Submit tile first.");
+    return;
+  }
+
+  const p = state.online.pendingTile;
+  const meepleFeature = skipMeeple ? null : (state.online.pendingMeepleFeatureId || null);
+  try{
+    const payload = await onlineApiPost("/api/match/submit_turn", {
+      token: state.online.token,
+      x: p.x,
+      y: p.y,
+      rot_deg: p.rotDeg,
+      meeple_feature_id: meepleFeature
+    });
+    state.online.match = payload.match || null;
+    clearOnlinePendingTurn();
+    if(isOnlineTab()) applyOnlineMatchToBoardState();
+    renderOnlineSidebar();
+    if(isOnlineTab()) renderOnlineScorePanel();
+    setStatus("Turn submitted.");
+  }catch(err){
+    setStatus(`Turn rejected: ${err?.message || err}`);
+  }
+}
+
+function onlineComputeProjection(analysis){
+  const endNow = {1:0, 2:0};
+  const ifCompleteNow = {1:0, 2:0};
+  for(const g of analysis.groups.values()){
+    const ws = winnersOfGroup(g);
+    if(ws.length===0) continue;
+
+    if(g.type==="road" || g.type==="city" || g.type==="cloister"){
+      if(!g.complete){
+        const ptsEnd = scoreEndNowValue(g);
+        for(const w of ws) endNow[w] += ptsEnd;
+        const ptsComp = (g.type==="cloister") ? 9 : scoreFeature(g, true);
+        for(const w of ws) ifCompleteNow[w] += ptsComp;
+      }
+    }else if(g.type==="field"){
+      const ptsFarm = scoreFeature(g, false);
+      for(const w of ws) endNow[w] += ptsFarm;
+    }
+  }
+  return {
+    endNow,
+    ifCompleteNow,
+    finalNow: {
+      1: state.score[1] + endNow[1],
+      2: state.score[2] + endNow[2]
+    }
+  };
+}
+
+function renderOnlineScorePanel(analysis){
+  const summaryEl = $("#onlineScoreSummary");
+  const listEl = $("#onlineFeatureList");
+  if(!summaryEl || !listEl) return;
+
+  if(!state.online.connected || !state.online.match){
+    summaryEl.innerHTML = `<div class="hint">No active online match.</div>`;
+    listEl.innerHTML = "";
+    return;
+  }
+
+  const a = analysis || analyzeBoard();
+  const proj = onlineComputeProjection(a);
+  summaryEl.innerHTML = `
+    <table class="scoreTable scoreSummaryTable">
+      <thead>
+        <tr><th></th><th>Current</th><th>End-if-now</th><th>Final-if-now</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="mono">P1</td><td class="mono">${state.score[1]}</td><td class="mono">+${proj.endNow[1]}</td><td class="mono">${proj.finalNow[1]}</td></tr>
+        <tr><td class="mono">P2</td><td class="mono">${state.score[2]}</td><td class="mono">+${proj.endNow[2]}</td><td class="mono">${proj.finalNow[2]}</td></tr>
+      </tbody>
+    </table>`;
+
+  const typeLabel = {city:"City", road:"Road", cloister:"Cloister", field:"Field"};
+  const typeCount = {city:0, road:0, cloister:0, field:0};
+  const entries = [];
+
+  for(const g of a.groups.values()){
+    const ws = winnersOfGroup(g);
+    if(ws.length===0) continue;
+    if(!(g.type in typeCount)) continue;
+    typeCount[g.type] += 1;
+    const pts = scoreEndNowValue(g);
+    const p1 = ws.includes(1) ? pts : 0;
+    const p2 = ws.includes(2) ? pts : 0;
+    entries.push({
+      key: g.key,
+      order: {city:0, road:1, cloister:2, field:3}[g.type],
+      idx: typeCount[g.type],
+      label: `${typeLabel[g.type]} #${typeCount[g.type]} | ${groupStatusText(g)} | P1:+${p1} P2:+${p2}`
+    });
+  }
+  entries.sort((a,b)=>a.order-b.order || a.idx-b.idx);
+
+  if(entries.length===0){
+    listEl.innerHTML = `<div class="hint">No claimed features yet.</div>`;
+    return;
+  }
+
+  listEl.innerHTML = entries.map((entry)=>{
+    const active = state.selectedScoreKey===entry.key ? " active" : "";
+    return `<button type="button" class="onlineFeatureRow${active}" data-score-key="${escHtml(entry.key)}">${escHtml(entry.label)}</button>`;
+  }).join("");
+
+  for(const btn of listEl.querySelectorAll(".onlineFeatureRow")){
+    const key = btn.dataset.scoreKey;
+    if(!key) continue;
+    btn.addEventListener("click", ()=>setSelectedScoreKey(key, "neutral"));
+  }
+}
+
+function renderOnlineSidebar(){
+  const connEl = $("#onlineConnStatus");
+  const usersEl = $("#onlineUsersList");
+  const inviteEl = $("#onlineInviteList");
+  const chatEl = $("#onlineChatLog");
+  const matchEl = $("#onlineMatchStatus");
+  const meepleEl = $("#onlineMeepleStatus");
+
+  const connectBtn = $("#onlineConnectBtn");
+  const disconnectBtn = $("#onlineDisconnectBtn");
+  const tileSubmitBtn = $("#onlineTileSubmitBtn");
+  const tileResetBtn = $("#onlineTileResetBtn");
+  const turnSubmitBtn = $("#onlineTurnSubmitBtn");
+  const turnSkipBtn = $("#onlineTurnSkipBtn");
+
+  if(connectBtn) connectBtn.disabled = state.online.connected;
+  if(disconnectBtn) disconnectBtn.disabled = !state.online.connected;
+
+  if(connEl){
+    connEl.textContent = state.online.connected
+      ? `Connected as ${state.online.userName || "?"}.`
+      : "Disconnected.";
+  }
+
+  if(!state.online.connected){
+    if(usersEl) usersEl.innerHTML = `<div class="hint">Connect to see players.</div>`;
+    if(inviteEl) inviteEl.innerHTML = `<div class="hint">No invites.</div>`;
+    if(chatEl) chatEl.innerHTML = `<div class="hint">No chat.</div>`;
+    if(matchEl) matchEl.textContent = "No active match.";
+    if(meepleEl) meepleEl.textContent = "Meeple selection: none.";
+    if(tileSubmitBtn) tileSubmitBtn.disabled = true;
+    if(tileResetBtn) tileResetBtn.disabled = true;
+    if(turnSubmitBtn) turnSubmitBtn.disabled = true;
+    if(turnSkipBtn) turnSkipBtn.disabled = true;
+    return;
+  }
+
+  const lobby = state.online.lobby;
+  const users = lobby?.users || [];
+  const sent = new Set((lobby?.invites_sent_by_me || []).map(inv=>inv.to_user_id));
+  const meStatus = lobby?.you?.status || "available";
+  const canInviteAnyone = meStatus==="available" && !lobby?.current_match_id;
+
+  if(usersEl){
+    const rows = users.map((u)=>{
+      const isSelf = u.id===state.online.userId;
+      const status = u.status || "available";
+      const btn = (!isSelf && canInviteAnyone && status==="available" && !sent.has(u.id))
+        ? `<button type="button" data-online-invite="${escHtml(u.id)}">Invite</button>`
+        : "";
+      return `
+        <div class="onlineRow">
+          <div class="onlineRowMain">
+            <span class="onlineName">${escHtml(u.name)}${isSelf ? " (you)" : ""}</span>
+            <span class="onlineStatus">${escHtml(status)}</span>
+          </div>
+          <div class="onlineButtons">${btn}</div>
+        </div>`;
+    }).join("");
+    usersEl.innerHTML = rows || `<div class="hint">No other users connected.</div>`;
+    for(const b of usersEl.querySelectorAll("[data-online-invite]")){
+      const uid = b.getAttribute("data-online-invite");
+      b.addEventListener("click", ()=>onlineSendInvite(uid));
+    }
+  }
+
+  if(inviteEl){
+    const incoming = lobby?.invites_for_me || [];
+    const outgoing = lobby?.invites_sent_by_me || [];
+    const incRows = incoming.map((inv)=>`
+      <div class="onlineRow">
+        <div class="onlineRowMain">
+          <span>${escHtml(inv.from_name)} invited you</span>
+        </div>
+        <div class="onlineButtons">
+          <button type="button" data-online-accept="${escHtml(inv.id)}">Accept</button>
+          <button type="button" data-online-decline="${escHtml(inv.id)}">Decline</button>
+        </div>
+      </div>`).join("");
+    const outRows = outgoing.map((inv)=>`
+      <div class="onlineRow">
+        <div class="onlineRowMain">
+          <span>Invite sent to ${escHtml(inv.to_name)}</span>
+        </div>
+        <div class="onlineButtons"></div>
+      </div>`).join("");
+
+    inviteEl.innerHTML = (incRows + outRows) || `<div class="hint">No pending invites.</div>`;
+    for(const b of inviteEl.querySelectorAll("[data-online-accept]")){
+      b.addEventListener("click", ()=>onlineRespondInvite(b.getAttribute("data-online-accept"), "accept"));
+    }
+    for(const b of inviteEl.querySelectorAll("[data-online-decline]")){
+      b.addEventListener("click", ()=>onlineRespondInvite(b.getAttribute("data-online-decline"), "decline"));
+    }
+  }
+
+  if(chatEl){
+    const chat = lobby?.chat || [];
+    const stayBottom = (chatEl.scrollTop + chatEl.clientHeight) >= (chatEl.scrollHeight - 30);
+    chatEl.innerHTML = chat.map((m)=>{
+      const sender = m.system ? "system" : (m.from?.name || "unknown");
+      const klass = m.system ? "onlineChatMsg onlineChatSystem" : "onlineChatMsg";
+      return `<div class="${klass}"><span class="onlineChatMeta">[${escHtml(m.time || "--:--:--")}] ${escHtml(sender)}:</span>${escHtml(m.text || "")}</div>`;
+    }).join("") || `<div class="hint">No messages yet.</div>`;
+    const latestId = chat.length ? chat[chat.length-1].id : null;
+    if(stayBottom || latestId!==state.online.chatRenderedLastId){
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+    state.online.chatRenderedLastId = latestId;
+  }
+
+  if(matchEl){
+    const m = state.online.match;
+    if(!m){
+      matchEl.textContent = "No active match.";
+    }else if(m.status==="active"){
+      const p1 = m.players?.find(p=>p.player===1);
+      const p2 = m.players?.find(p=>p.player===2);
+      const t = m.current_turn;
+      matchEl.innerHTML = `
+        P1 ${escHtml(p1?.name || "P1")} (meeples ${p1?.meeples_left ?? 0}) vs
+        P2 ${escHtml(p2?.name || "P2")} (meeples ${p2?.meeples_left ?? 0})<br/>
+        Turn ${t?.turn_index || 0}: ${escHtml(t?.name || "?" )} draws <b>${escHtml(t?.tile_id || "?")}</b>.
+        ${Array.isArray(t?.burned) && t.burned.length ? `Burned before draw: ${escHtml(t.burned.join(", "))}.` : ""}
+      `;
+    }else{
+      const p1 = m.players?.find(p=>p.player===1);
+      const p2 = m.players?.find(p=>p.player===2);
+      matchEl.innerHTML = `Match ${escHtml(m.status)}. Final: ${escHtml(p1?.name || "P1")} ${p1?.score ?? 0} - ${p2?.score ?? 0} ${escHtml(p2?.name || "P2")}.`;
+    }
+  }
+
+  const canAct = onlineMatchCanAct();
+  if(tileSubmitBtn) tileSubmitBtn.disabled = !(canAct && !!state.online.pendingTile && !state.online.tileLocked);
+  if(tileResetBtn) tileResetBtn.disabled = !(canAct && !!state.online.pendingTile);
+  if(turnSubmitBtn) turnSubmitBtn.disabled = !(canAct && !!state.online.pendingTile && !!state.online.tileLocked);
+  if(turnSkipBtn) turnSkipBtn.disabled = !(canAct && !!state.online.pendingTile && !!state.online.tileLocked);
+
+  if(meepleEl){
+    const sel = state.online.pendingMeepleFeatureId;
+    meepleEl.textContent = sel ? `Meeple selection: ${sel}.` : "Meeple selection: none.";
+  }
+}
+
+function initOnlineUI(){
+  const nameInput = $("#onlineNameInput");
+  if(nameInput){
+    try{
+      const saved = localStorage.getItem(ONLINE_NAME_STORAGE_KEY) || "";
+      if(saved) nameInput.value = saved;
+    }catch(_err){}
+    nameInput.addEventListener("keydown", (e)=>{
+      if(e.key!=="Enter") return;
+      e.preventDefault();
+      onlineConnect().catch((err)=>setStatus(`Connect failed: ${err?.message || err}`));
+    });
+  }
+
+  $("#onlineConnectBtn")?.addEventListener("click", ()=>{
+    onlineConnect().catch((err)=>setStatus(`Connect failed: ${err?.message || err}`));
+  });
+  $("#onlineDisconnectBtn")?.addEventListener("click", ()=>{
+    onlineDisconnect(true).catch(()=>{});
+  });
+
+  $("#onlineChatSend")?.addEventListener("click", ()=>{
+    onlineSendChat().catch(()=>{});
+  });
+  $("#onlineChatInput")?.addEventListener("keydown", (e)=>{
+    if(e.key!=="Enter") return;
+    e.preventDefault();
+    onlineSendChat().catch(()=>{});
+  });
+
+  $("#onlineTileSubmitBtn")?.addEventListener("click", ()=>onlineSubmitTileLocal());
+  $("#onlineTileResetBtn")?.addEventListener("click", ()=>onlineResetTileLocal());
+  $("#onlineTurnSubmitBtn")?.addEventListener("click", ()=>{
+    onlineSubmitTurn(false).catch(()=>{});
+  });
+  $("#onlineTurnSkipBtn")?.addEventListener("click", ()=>{
+    onlineSubmitTurn(true).catch(()=>{});
+  });
+
+  window.addEventListener("beforeunload", ()=>{
+    if(!state.online.connected || !state.online.token) return;
+    try{
+      const blob = new Blob([JSON.stringify({token: state.online.token})], {type:"application/json"});
+      navigator.sendBeacon("/api/session/leave", blob);
+    }catch(_err){}
+  });
+
+  renderOnlineSidebar();
+  renderOnlineScorePanel();
+}
+// ------------------ end Online lobby/match ------------------
 
 
 // -------------------- Manual Area Editor --------------------
@@ -1513,16 +4041,29 @@ function getBaseFeature(tileId, featureId){
   return state.areasBase?.tiles?.[tileId]?.features?.[featureId] || null;
 }
 
+function getBaseTileFeature(tileId, featureId){
+  const tile = state.tileById.get(tileId);
+  if(!tile || !Array.isArray(tile.features)) return null;
+  return tile.features.find(f=>f.id===featureId) || null;
+}
+
 function getOverrideFeature(tileId, featureId){
   return state.areasOverride?.tiles?.[tileId]?.features?.[featureId] || null;
 }
 
 function setOverrideFeature(tileId, featureId, type, polygons){
-  const baseFeat = getBaseFeature(tileId, featureId);
-  const fallback = baseFeat ? { type: baseFeat.type, polygons: [], ports: baseFeat.ports||[], tags: baseFeat.tags||{}, meeple_placement: baseFeat.meeple_placement||[0.5,0.5] }
-                           : { type: type||"field", polygons: [], ports: [], tags: {}, meeple_placement: [0.5,0.5] };
+  const baseAreaFeat = getBaseFeature(tileId, featureId);
+  const baseTileFeat = getBaseTileFeature(tileId, featureId);
+  const mergedFeat = mergedFeaturesForTile(tileId).find(f=>f.id===featureId);
+  const fallback = {
+    type: type || mergedFeat?.type || baseTileFeat?.type || baseAreaFeat?.type || "field",
+    polygons: baseAreaFeat?.polygons || [],
+    ports: mergedFeat?.ports || baseTileFeat?.ports || [],
+    tags: mergedFeat?.tags || baseTileFeat?.tags || {},
+    meeple_placement: mergedFeat?.meeple_placement || baseTileFeat?.meeple_placement || [0.5,0.5]
+  };
   const entry = ensureOverrideEntry(tileId, featureId, fallback);
-  entry.type = type || entry.type || "field";
+  entry.type = type || entry.type || fallback.type || "field";
   if(!Array.isArray(entry.ports)) entry.ports = deepCopy(fallback.ports || []);
   entry.ports = normalizePortsForType(entry.ports, entry.type);
   entry.polygons = polygons || [];
@@ -1535,9 +4076,16 @@ function setOverrideFeature(tileId, featureId, type, polygons){
 
 function deleteOverrideFeature(tileId, featureId){
   // Mark as deleted so it can hide base features too
-  const baseFeat = getBaseFeature(tileId, featureId);
-  const fallback = baseFeat ? { type: baseFeat.type, polygons: [], ports: baseFeat.ports||[], tags: baseFeat.tags||{}, meeple_placement: baseFeat.meeple_placement||[0.5,0.5] }
-                           : { type: "field", polygons: [], ports: [], tags: {}, meeple_placement:[0.5,0.5] };
+  const baseAreaFeat = getBaseFeature(tileId, featureId);
+  const baseTileFeat = getBaseTileFeature(tileId, featureId);
+  const mergedFeat = mergedFeaturesForTile(tileId).find(f=>f.id===featureId);
+  const fallback = {
+    type: mergedFeat?.type || baseTileFeat?.type || baseAreaFeat?.type || "field",
+    polygons: baseAreaFeat?.polygons || [],
+    ports: mergedFeat?.ports || baseTileFeat?.ports || [],
+    tags: mergedFeat?.tags || baseTileFeat?.tags || {},
+    meeple_placement: mergedFeat?.meeple_placement || baseTileFeat?.meeple_placement || [0.5,0.5]
+  };
   const entry = ensureOverrideEntry(tileId, featureId, fallback);
   entry.deleted = true;
   persistOverridesToLocalStorage();
@@ -1968,19 +4516,172 @@ function updateBrushLabel(){
   if(el) el.textContent = `${state.refine.brushR}px`;
 }
 
+function pickPreferredFeatureOwner(features, preferredFeatureId){
+  if(preferredFeatureId){
+    const keep = features.find(f=>f.id===preferredFeatureId);
+    if(keep) return keep;
+  }
+  return [...features].sort((a,b)=>{
+    const pa = REFINE_TYPE_PRIORITY[a.type] ?? 99;
+    const pb = REFINE_TYPE_PRIORITY[b.type] ?? 99;
+    if(pa !== pb) return pa - pb;
+    return a.id.localeCompare(b.id);
+  })[0];
+}
+
+function ensureOverrideFromMergedFeature(tileId, feat){
+  const area = getAreaFeature(tileId, feat.id);
+  return ensureOverrideEntry(tileId, feat.id, {
+    type: feat.type,
+    polygons: area?.polygons || [],
+    ports: feat.ports || [],
+    tags: feat.tags || {},
+    meeple_placement: feat.meeple_placement || [0.5,0.5]
+  });
+}
+
+function enforceRefinePortExclusivity(tileId, preferredFeatureId){
+  const feats = mergedFeaturesForTile(tileId).filter(f=>["road","city","field","cloister"].includes(f.type));
+  if(!feats.length) return false;
+
+  const nextPorts = new Map(feats.map(f=>[f.id, new Set(normalizePortsForType(f.ports || [], f.type))]));
+  const originalPorts = new Map(feats.map(f=>[f.id, normalizePortsForType(f.ports || [], f.type)]));
+
+  // Road/city edges are exclusive to a single road/city feature per edge.
+  for(const edge of ["N","E","S","W"]){
+    const owners = feats.filter(f=>["road","city"].includes(f.type) && nextPorts.get(f.id)?.has(edge));
+    if(owners.length <= 1) continue;
+    const keep = pickPreferredFeatureOwner(owners, preferredFeatureId);
+    for(const f of owners){
+      if(f.id !== keep.id) nextPorts.get(f.id).delete(edge);
+    }
+  }
+
+  // City ownership of an edge removes both field halves on that edge from all fields.
+  const fields = feats.filter(f=>f.type==="field");
+  for(const city of feats.filter(f=>f.type==="city")){
+    const cityPorts = nextPorts.get(city.id);
+    for(const edge of ["N","E","S","W"]){
+      if(!cityPorts?.has(edge)) continue;
+      for(const h of EDGE_TO_FIELD_HALVES[edge]){
+        for(const ff of fields){
+          nextPorts.get(ff.id).delete(h);
+        }
+      }
+    }
+  }
+
+  // Field halves are exclusive between field features.
+  for(const half of ["Nw","Ne","En","Es","Se","Sw","Ws","Wn"]){
+    const owners = fields.filter(f=>nextPorts.get(f.id)?.has(half));
+    if(owners.length <= 1) continue;
+    const keep = pickPreferredFeatureOwner(owners, preferredFeatureId);
+    for(const f of owners){
+      if(f.id !== keep.id) nextPorts.get(f.id).delete(half);
+    }
+  }
+
+  let changed = false;
+  for(const feat of feats){
+    const normalized = normalizePortsForType(Array.from(nextPorts.get(feat.id) || []), feat.type);
+    const prev = originalPorts.get(feat.id) || [];
+    if(JSON.stringify(prev) === JSON.stringify(normalized)) continue;
+    const ent = ensureOverrideFromMergedFeature(tileId, feat);
+    ent.deleted = false;
+    ent.type = feat.type;
+    ent.ports = normalized;
+    changed = true;
+  }
+
+  if(changed) persistOverridesToLocalStorage();
+  return changed;
+}
+
+function enforceRefinePolygonExclusivity(tileId, preferredFeatureId){
+  const N = state.refine?.N || 256;
+  const feats = mergedFeaturesForTile(tileId).filter(f=>["road","city","field","cloister"].includes(f.type));
+  if(!feats.length) return false;
+
+  const items = feats.map(feat=>{
+    const area = getAreaFeature(tileId, feat.id);
+    const polys = Array.isArray(area?.polygons) ? area.polygons : [];
+    const mask = new Uint8Array(N * N);
+    rasterizePolygonsToMask(polys, mask, N);
+    return { feat, mask };
+  });
+
+  items.sort((a,b)=>{
+    if(a.feat.id===preferredFeatureId) return -1;
+    if(b.feat.id===preferredFeatureId) return 1;
+    const pa = REFINE_TYPE_PRIORITY[a.feat.type] ?? 99;
+    const pb = REFINE_TYPE_PRIORITY[b.feat.type] ?? 99;
+    if(pa !== pb) return pa - pb;
+    return a.feat.id.localeCompare(b.feat.id);
+  });
+
+  const occupied = new Uint8Array(N * N);
+  const changed = new Set();
+  for(const item of items){
+    const m = item.mask;
+    let touched = false;
+    for(let i=0;i<m.length;i++){
+      if(m[i] && occupied[i]){
+        m[i] = 0;
+        touched = true;
+      }
+    }
+    if(touched) changed.add(item.feat.id);
+    for(let i=0;i<m.length;i++){
+      if(m[i]) occupied[i] = 1;
+    }
+  }
+
+  if(changed.size===0) return false;
+
+  for(const item of items){
+    if(!changed.has(item.feat.id)) continue;
+    const polys = maskToPolygons(item.mask, N);
+    const ent = ensureOverrideFromMergedFeature(tileId, item.feat);
+    ent.deleted = false;
+    ent.type = item.feat.type;
+    ent.polygons = polys;
+    ent.ports = normalizePortsForType(ent.ports || item.feat.ports || [], ent.type);
+    ent.meeple_placement = featureCentroid(polys);
+  }
+  persistOverridesToLocalStorage();
+  return true;
+}
+
+function applyRefineAutoAdjustments(tileId, featureId){
+  if(!tileId || !featureId) return;
+  const portsChanged = enforceRefinePortExclusivity(tileId, featureId);
+  const polysChanged = enforceRefinePolygonExclusivity(tileId, featureId);
+  if(portsChanged || polysChanged){
+    setStatus(`Auto-adjusted ${tileId}:${featureId} to keep ports/polygons exclusive.`);
+  }
+}
+
 function refinePrev(){
+  const cur = state.refine.list[state.refine.idx];
   if(!saveCurrentRefineWork()) return;
+  applyRefineAutoAdjustments(cur?.tileId, cur?.featureId);
   state.refine.list = buildRefineList();
-  state.refine.idx = Math.max(0, state.refine.idx - 1);
+  const curIdx = cur ? state.refine.list.findIndex(it=>it.tileId===cur.tileId && it.featureId===cur.featureId) : state.refine.idx;
+  const from = curIdx>=0 ? curIdx : state.refine.idx;
+  state.refine.idx = Math.max(0, from - 1);
   refineResetToCurrent();
   renderRefine();
     renderRefineAll();
 }
 
 function refineNext(){
+  const cur = state.refine.list[state.refine.idx];
   if(!saveCurrentRefineWork()) return;
+  applyRefineAutoAdjustments(cur?.tileId, cur?.featureId);
   state.refine.list = buildRefineList();
-  state.refine.idx = Math.min(state.refine.list.length - 1, state.refine.idx + 1);
+  const curIdx = cur ? state.refine.list.findIndex(it=>it.tileId===cur.tileId && it.featureId===cur.featureId) : state.refine.idx;
+  const from = curIdx>=0 ? curIdx : state.refine.idx;
+  state.refine.idx = Math.min(state.refine.list.length - 1, from + 1);
   refineResetToCurrent();
   renderRefine();
     renderRefineAll();
@@ -2051,7 +4752,7 @@ function refineResetToCurrent(){
 function refineSaveCurrentMaskAsOverride(){
   const {tileId, featureId, mask, N} = state.refine;
   const mergedFeat = mergedFeaturesForTile(tileId).find(f=>f.id===featureId);
-  const baseFeat = getBaseFeature(tileId, featureId);
+  const baseFeat = getBaseTileFeature(tileId, featureId) || getBaseFeature(tileId, featureId);
   const featureType = state.refine.featureType || mergedFeat?.type || baseFeat?.type || "field";
   state.refine.featureType = featureType;
   const polys = maskToPolygons(mask, N);
@@ -2441,47 +5142,62 @@ function renderPortsButtons(){
 
   const feat = mergedFeaturesForTile(tileId).find(f=>f.id===fid);
   const featType = feat?.type || cur.featureType || "field";
-  const allowed = allowedPortsForType(featType);
-  if(allowed.length===0){
-    box.textContent = "No boundary edges for cloister.";
-    return;
-  }
+  const allowed = new Set(allowedPortsForType(featType));
   const ports = new Set(normalizePortsForType(feat?.ports || [], featType));
 
-  for(const p of PORT_DISPLAY_ORDER){
-    if(!allowed.includes(p)) continue;
-    const b = document.createElement("button");
-    b.type="button";
-    b.className = "rpPortBtn" + (ports.has(p) ? " on" : "");
-    b.textContent = p;
-    b.addEventListener("click", ()=>{
-      togglePort(tileId, fid, p);
-      renderPortsButtons();
-      renderRefine();
-    renderRefineAll();
-      renderRefineAll();
-      render();
-    });
-    box.appendChild(b);
+  for(const row of PORT_GRID_5X5){
+    for(const p of row){
+      const slot = document.createElement("div");
+      slot.className = "rpPortSlot";
+
+      if(!p || !allowed.has(p)){
+        box.appendChild(slot);
+        continue;
+      }
+
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "rpPortBtn" + (ports.has(p) ? " on" : "");
+      b.textContent = p;
+      b.addEventListener("click", ()=>{
+        togglePort(tileId, fid, p);
+        renderPortsButtons();
+        renderRefine();
+        renderRefineAll();
+        renderRefineAll();
+        render();
+      });
+
+      slot.appendChild(b);
+      box.appendChild(slot);
+    }
   }
 }
 
 function togglePort(tileId, fid, port){
-  // Write ports into override entry for this feature (even if base feature)
-  const base = getBaseFeature(tileId, fid);
-  const baseFallback = base ? { type: base.type, polygons: getAreaFeature(tileId,fid)?.polygons || [], ports: base.ports||[], tags: base.tags||{}, meeple_placement: base.meeple_placement||[0.5,0.5] }
-                           : { type: "field", polygons: getAreaFeature(tileId,fid)?.polygons || [], ports: [], tags: {}, meeple_placement:[0.5,0.5] };
-  const ent = ensureOverrideEntry(tileId, fid, baseFallback);
-  if(ent.deleted) ent.deleted_tf = true; // noop marker; keep deleted for deleteFeature
-  ent.deleted = false;
-  const allowed = new Set(allowedPortsForType(ent.type || baseFallback.type || "field"));
+  // Toggle against the currently effective feature ports so clicks do not reset previous selections.
+  const curFeat = mergedFeaturesForTile(tileId).find(f=>f.id===fid);
+  const featType = curFeat?.type || "field";
+  const allowed = new Set(allowedPortsForType(featType));
   if(!allowed.has(port)) return;
-  if(!Array.isArray(ent.ports)) ent.ports = deepCopy(baseFallback.ports || []);
-  ent.ports = normalizePortsForType(ent.ports, ent.type || baseFallback.type || "field");
-  const s = new Set(ent.ports);
-  if(s.has(port)) s.delete(port);
-  else s.add(port);
-  ent.ports = normalizePortsForType(Array.from(s), ent.type || baseFallback.type || "field");
+
+  const area = getAreaFeature(tileId, fid);
+  const fallback = {
+    type: featType,
+    polygons: area?.polygons || [],
+    ports: normalizePortsForType(curFeat?.ports || [], featType),
+    tags: curFeat?.tags || {},
+    meeple_placement: curFeat?.meeple_placement || [0.5,0.5]
+  };
+
+  const ent = ensureOverrideEntry(tileId, fid, fallback);
+  ent.deleted = false;
+  ent.type = featType;
+
+  const nextPorts = new Set(normalizePortsForType(curFeat?.ports || ent.ports || [], featType));
+  if(nextPorts.has(port)) nextPorts.delete(port);
+  else nextPorts.add(port);
+  ent.ports = normalizePortsForType(Array.from(nextPorts), featType);
   persistOverridesToLocalStorage();
 }
 
@@ -2542,7 +5258,7 @@ function refineDeleteFeature(){
   for(const [k, inst] of state.board.entries()){
     if(inst.tileId !== tileId) continue;
     if(!inst.meeples) continue;
-    inst.meeples = inst.meeples.filter(m=>m.featureId !== fid);
+    inst.meeples = inst.meeples.filter(m=>m.featureLocalId !== fid);
   }
 
   state.refine.list = buildRefineList();
@@ -2666,6 +5382,12 @@ async function main(){
   state.remaining = deepCopy(state.counts);
 
   for(const t of tileset.tiles) state.tileById.set(t.id, t);
+  for(const tileId of state.tileById.keys()){
+    if(tileImgCache.has(tileId)) continue;
+    const img = new Image();
+    img.src = tileImageUrl(tileId);
+    tileImgCache.set(tileId, img);
+  }
 
   // Default highlight areas: procedurally generated from edge ports (coarse, always connected)
   try{
@@ -2689,13 +5411,22 @@ async function main(){
     }
   }
 
+  const repaired = repairLegacyOverridePorts();
+  if(repaired>0){
+    console.info(`Repaired ${repaired} legacy override port entr${repaired===1?"y":"ies"}.`);
+    persistOverridesToLocalStorage();
+  }
+  clearFieldCityAdjCache();
+  clearSimplifiedFeatureGeomCache();
+
   initUI();
   renderTileSelect();
   renderTilePalette();
   buildBoardGrid(25);
   updateTilePreview();
+  setActiveTab("online");
   render();
-  setStatus("Ready. Hover board for ghost. Wheel rotates. Arrows scroll. Hover meeple markers to highlight feature polygons.");
+  setStatus("Ready. Connect in Settings, invite a player, then play directly on the board.");
 }
 
 main().catch(err=>{

@@ -1,7 +1,8 @@
 
 :root{
   --cell: 64px;
-  --gap: 2px;
+  --gap: 1px;
+  --grid-line: #c9c9c9;
   --bg: #0f1115;
   --panel: #151923;
   --panel2: #101521;
@@ -13,15 +14,37 @@
 *{ box-sizing:border-box; }
 html,body{ height:100%; margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, sans-serif; background:var(--bg); color:var(--txt); }
 
-#app{ height:100%; display:grid; grid-template-columns: 340px 1fr; }
+#app{
+  --sidebar-width: 340px;
+  height:100%;
+  display:grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+}
 
 #sidebar{
   background: linear-gradient(180deg, var(--panel), var(--panel2));
   border-right: 1px solid var(--line);
   padding: 14px;
   overflow:auto;
+  min-width: 300px;
+  overscroll-behavior: contain;
 }
 #sidebar h1{ font-size:18px; margin: 2px 0 12px; }
+
+#appSplitter{
+  background: rgba(255,255,255,0.05);
+  border-left: 1px solid rgba(255,255,255,0.04);
+  border-right: 1px solid rgba(0,0,0,0.35);
+  cursor: col-resize;
+  transition: background 120ms ease;
+}
+#appSplitter:hover{
+  background: rgba(255,255,255,0.11);
+}
+body.resizing{
+  cursor: col-resize;
+  user-select: none;
+}
 
 .card{
   border: 1px solid var(--line);
@@ -33,13 +56,16 @@ html,body{ height:100%; margin:0; font-family: system-ui, -apple-system, Segoe U
 .card h2{ font-size:14px; margin:0 0 8px; color:var(--muted); }
 .row{ display:flex; gap:8px; align-items:center; margin: 6px 0; }
 label{ font-size:13px; color:var(--muted); }
-select, button{
+input, select, button{
   background: rgba(255,255,255,0.06);
   color: var(--txt);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 13px;
+}
+input::placeholder{
+  color: rgba(255,255,255,0.55);
 }
 button:hover{ background: rgba(255,255,255,0.10); cursor:pointer; }
 button:active{ transform: translateY(1px); }
@@ -69,6 +95,13 @@ button:active{ transform: translateY(1px); }
   overflow:auto;
   height:100%;
   padding: 12px;
+  background-color: var(--bg);
+  touch-action: pan-x pan-y;
+}
+#refineMain{
+  height: 100%;
+  overflow: auto;
+  padding: 12px;
 }
 #board{
   display:grid;
@@ -76,23 +109,46 @@ button:active{ transform: translateY(1px); }
   grid-auto-columns: var(--cell);
   gap: var(--gap);
   user-select:none;
+  width: max-content;
+  height: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  background-color: var(--bg);
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      transparent 0,
+      transparent var(--cell),
+      var(--grid-line) var(--cell),
+      var(--grid-line) calc(var(--cell) + var(--gap))
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent var(--cell),
+      var(--grid-line) var(--cell),
+      var(--grid-line) calc(var(--cell) + var(--gap))
+    );
+  background-size: calc(var(--cell) + var(--gap)) calc(var(--cell) + var(--gap));
+  background-position: 0 0;
 }
 
 .cell{
   width: var(--cell);
   height: var(--cell);
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 6px;
-  background: rgba(255,255,255,0.02);
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
   position:relative;
 }
-.cell:hover{ border-color: rgba(255,255,255,0.18); }
+.cell:hover{ box-shadow: inset 0 0 0 1px rgba(255,255,255,0.24); }
 
 .tile{
   position:absolute;
   inset:0;
-  border-radius: 6px;
+  border-radius: 0;
   overflow:hidden;
+  background-color: var(--grid-line);
   background-size: cover;
   background-position:center;
   transform-origin: 50% 50%;
@@ -112,6 +168,10 @@ button:active{ transform: translateY(1px); }
 }
 .meeple.p1{ background: rgba(90, 170, 255, 0.95); }
 .meeple.p2{ background: rgba(255, 90, 90, 0.95); }
+.meeple.scoreSel{
+  box-shadow: 0 0 0 3px rgba(255, 225, 120, 0.85);
+  border-color: rgba(0,0,0,0.8);
+}
 
 .marker{
   position:absolute;
@@ -146,6 +206,7 @@ button:active{ transform: translateY(1px); }
 
 /* Tile palette + preview */
 .tilePreview{
+  position: relative;
   width: 72px;
   height: 72px;
   border-radius: 10px;
@@ -153,6 +214,7 @@ button:active{ transform: translateY(1px); }
   background: rgba(255,255,255,0.02);
   background-size: cover;
   background-position:center;
+  overflow: hidden;
   flex: 0 0 auto;
   transform-origin: 50% 50%;
 }
@@ -213,10 +275,22 @@ button:active{ transform: translateY(1px); }
 .tile.ghost.invalid{
   outline: 2px dashed rgba(255, 80, 80, 0.7);
 }
+.tile.pending{
+  outline: 2px solid rgba(255,255,255,0.72);
+}
+.tile.pending.locked{
+  outline-color: rgba(120, 200, 255, 0.95);
+}
 
 /* Connected-area highlight */
 .tile.hl{
-  box-shadow: inset 0 0 0 3px rgba(255,255,255,0.18);
+  box-shadow: inset 0 0 0 3px rgba(255,255,255,0.45);
+}
+.tile.scoreHl{
+  box-shadow: inset 0 0 0 3px rgba(255,255,255,0.65);
+}
+.tile.scoreHl.neutral{
+  box-shadow: inset 0 0 0 3px rgba(255, 216, 92, 0.98);
 }
 .hlOverlay{
   position:absolute;
@@ -241,7 +315,91 @@ button:active{ transform: translateY(1px); }
 
 
 /* Feature area polygons overlay */
-.areaSvg{mix-blend-mode: normal;}
+.areaSvg{
+  mix-blend-mode: normal;
+  filter: saturate(1.35) contrast(1.08);
+}
+.cityBoundarySvg{ mix-blend-mode: normal; }
+
+.tileSimpleWrap{
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  user-select:none;
+}
+.simpleTileSvg{
+  width:100%;
+  height:100%;
+  display:block;
+}
+.thumb .img.simpleGraphic{
+  background: none;
+}
+
+.cityRefLabel{
+  position: absolute;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  background: rgba(255,255,255,0.92);
+  color: rgba(0,0,0,0.9);
+  border: 1px solid rgba(0,0,0,0.75);
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.scoreSummaryTable{
+  margin-bottom: 8px;
+}
+.scoreTypeList{
+  display: grid;
+  gap: 6px;
+}
+.scoreTypeBlock{
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.02);
+  padding: 4px 6px 6px 6px;
+}
+.scoreTypeBlock > summary{
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  user-select: none;
+  list-style: none;
+}
+.scoreTypeBlock > summary::-webkit-details-marker{
+  display: none;
+}
+.scoreTypeBlock > summary::before{
+  content: ">";
+  display: inline-block;
+  width: 14px;
+  color: rgba(255,255,255,0.7);
+}
+.scoreTypeBlock[open] > summary::before{
+  content: "v";
+}
+.scoreDetailsTable{
+  margin-top: 6px;
+}
+.scoreEntryRow{
+  cursor: pointer;
+}
+.scoreEntryRow:hover{
+  background: rgba(255,255,255,0.06);
+}
+.scoreEntryRow.active{
+  background: rgba(255, 215, 110, 0.24);
+}
+.muted{
+  color: var(--muted);
+}
 
 
 /* Ensure tile images render reliably */
@@ -310,8 +468,154 @@ button.primary{
   background: rgba(255,255,255,0.14);
   border-color: rgba(255,255,255,0.22);
 }
+.onlineOnly{
+  --sidebar-width: 360px;
+}
+#onlinePane{
+  display: grid;
+  gap: 0;
+}
+.onlinePrimaryCard{
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  backdrop-filter: blur(4px);
+}
+.onlinePrimaryCard #onlineScoreSummary{
+  margin-top: 8px;
+}
+.onlineCollapse > summary{
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  user-select: none;
+}
+.onlineCollapse > summary::-webkit-details-marker{
+  display: none;
+}
+.onlineCollapse > summary::before{
+  content: ">";
+  display: inline-block;
+  width: 14px;
+  color: rgba(255,255,255,0.7);
+}
+.onlineCollapse[open] > summary::before{
+  content: "v";
+}
+.onlineCollapse > :not(summary){
+  margin-top: 8px;
+}
+
+.onlineList{
+  display: grid;
+  gap: 6px;
+}
+.onlineRow{
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.onlineRowMain{
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+.onlineName{
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.onlineStatus{
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.onlineButtons{
+  display: flex;
+  gap: 6px;
+}
+.onlineButtons button{
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.onlineChatLog{
+  display: grid;
+  gap: 5px;
+  max-height: 190px;
+  overflow: auto;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(0,0,0,0.18);
+  font-size: 12px;
+}
+.onlineChatMsg{
+  line-height: 1.35;
+}
+.onlineChatMeta{
+  color: var(--muted);
+  margin-right: 6px;
+}
+.onlineChatSystem{
+  color: #d4c26f;
+}
+.onlineFeatureList{
+  margin-top: 8px;
+  display: grid;
+  gap: 4px;
+  max-height: 210px;
+  overflow: auto;
+}
+.onlineFeatureRow{
+  text-align: left;
+  width: 100%;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.03);
+  color: var(--txt);
+  font-size: 12px;
+}
+.onlineFeatureRow:hover{
+  background: rgba(255,255,255,0.08);
+}
+.onlineFeatureRow.active{
+  border-color: rgba(255, 215, 110, 0.8);
+  background: rgba(255, 215, 110, 0.2);
+}
+#onlineNameInput,
+#onlineChatInput{
+  flex: 1;
+  min-width: 0;
+}
 
 /* Refine paint stage */
+.rpStages{
+  display:grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+.rpStagesMain{
+  margin-top: 0;
+}
+.rpStageCard{ min-width: 0; }
+.rpStageLabel{
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
 .rpStage{
   width: 100%;
   aspect-ratio: 1 / 1;
@@ -330,17 +634,22 @@ button.primary{
 
 
 .rpStageAll{
-  margin-top: 6px;
+  margin-top: 0;
 }
 
 /* Ports toggle grid */
 .rpPorts{
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
   margin-bottom: 6px;
 }
+.rpPortSlot{
+  min-height: 32px;
+}
 .rpPortBtn{
+  width: 100%;
+  min-height: 32px;
   padding: 6px 6px;
   border-radius: 10px;
   border: 1px solid rgba(255,255,255,0.12);
@@ -357,4 +666,29 @@ button.primary{
 .rpPortBtn.warn{
   outline: 2px solid rgba(255, 80, 80, 0.55);
   outline-offset: 1px;
+}
+
+@media (max-width: 980px){
+  #app{
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  #sidebar{
+    min-width: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    max-height: 40vh;
+  }
+  #appSplitter{
+    display: none;
+  }
+  #toolbar{
+    padding: 8px 10px;
+  }
+  #status{
+    font-size: 12px;
+  }
+  .rpStages{
+    grid-template-columns: 1fr;
+  }
 }
