@@ -89,6 +89,28 @@ button:active{ transform: translateY(1px); }
   border-bottom: 1px solid var(--line);
   background: rgba(255,255,255,0.02);
 }
+#toolbarTop{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+#toggleSidebarBtn{
+  flex: 0 0 auto;
+}
+#boardTopInfo{
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--txt);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#onlineBoardActions{
+  display: flex;
+  gap: 6px;
+}
 #status{ color: var(--muted); font-size: 13px; }
 
 #boardWrap{
@@ -97,6 +119,16 @@ button:active{ transform: translateY(1px); }
   padding: 12px;
   background-color: var(--bg);
   touch-action: pan-x pan-y;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  cursor: grab;
+}
+#boardWrap::-webkit-scrollbar{
+  width: 0;
+  height: 0;
+}
+#boardWrap.panning{
+  cursor: grabbing;
 }
 #refineMain{
   height: 100%;
@@ -113,24 +145,8 @@ button:active{ transform: translateY(1px); }
   height: max-content;
   min-width: 100%;
   min-height: 100%;
-  background-color: var(--bg);
-  background-image:
-    repeating-linear-gradient(
-      to right,
-      transparent 0,
-      transparent var(--cell),
-      var(--grid-line) var(--cell),
-      var(--grid-line) calc(var(--cell) + var(--gap))
-    ),
-    repeating-linear-gradient(
-      to bottom,
-      transparent 0,
-      transparent var(--cell),
-      var(--grid-line) var(--cell),
-      var(--grid-line) calc(var(--cell) + var(--gap))
-    );
-  background-size: calc(var(--cell) + var(--gap)) calc(var(--cell) + var(--gap));
-  background-position: 0 0;
+  background-color: var(--grid-line);
+  border: 2px solid rgba(255, 60, 60, 0.85);
 }
 
 .cell{
@@ -148,11 +164,13 @@ button:active{ transform: translateY(1px); }
   inset:0;
   border-radius: 0;
   overflow:hidden;
-  background-color: var(--grid-line);
+  background-color: #1c2330;
   background-size: cover;
   background-position:center;
   transform-origin: 50% 50%;
   display:block;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 .tile.invalid{ outline: 2px solid rgba(255, 80, 80, 0.7); }
 .tile.selected{ outline: 2px solid rgba(120, 200, 255, 0.7); }
@@ -267,8 +285,8 @@ button:active{ transform: translateY(1px); }
 
 /* Ghost tile */
 .tile.ghost{
-  opacity: 0.55;
-  filter: saturate(0.9);
+  opacity: 0.68;
+  filter: none;
   outline: 2px dashed rgba(255,255,255,0.35);
   pointer-events:none;
 }
@@ -289,8 +307,47 @@ button:active{ transform: translateY(1px); }
 .tile.scoreHl{
   box-shadow: inset 0 0 0 3px rgba(255,255,255,0.65);
 }
-.tile.scoreHl.neutral{
+.tile.scoreHl.tone-neutral{
   box-shadow: inset 0 0 0 3px rgba(255, 216, 92, 0.98);
+}
+.tile.scoreHl.tone-p1{
+  box-shadow: inset 0 0 0 3px rgba(40,155,255,0.98);
+}
+.tile.scoreHl.tone-p2{
+  box-shadow: inset 0 0 0 3px rgba(255,70,70,0.98);
+}
+.tile.scoreHl.tone-tie{
+  box-shadow: inset 0 0 0 3px rgba(168,112,255,0.98);
+}
+.tile.remoteIntent{
+  --intent-w: 7px;
+  opacity: 1;
+  filter: none;
+  outline: none;
+  border-style: solid;
+  border-color: transparent;
+  border-width: var(--intent-w);
+  box-sizing: border-box;
+  pointer-events: none;
+}
+.tile.remoteIntent.cursor{
+  opacity: 1;
+  --intent-w: 7px;
+}
+.tile.remoteIntent.locked{
+  opacity: 1;
+  --intent-w: 8px;
+}
+.tile.remoteIntent.p1{
+  border-color: rgba(40,155,255,0.99);
+  box-shadow: 0 0 18px rgba(40,155,255,0.66);
+}
+.tile.remoteIntent.p2{
+  border-color: rgba(255,70,70,0.99);
+  box-shadow: 0 0 18px rgba(255,70,70,0.66);
+}
+.tile.remoteIntent.invalid{
+  filter: brightness(0.92);
 }
 .hlOverlay{
   position:absolute;
@@ -317,7 +374,7 @@ button:active{ transform: translateY(1px); }
 /* Feature area polygons overlay */
 .areaSvg{
   mix-blend-mode: normal;
-  filter: saturate(1.35) contrast(1.08);
+  filter: none;
 }
 .cityBoundarySvg{ mix-blend-mode: normal; }
 
@@ -409,8 +466,11 @@ button:active{ transform: translateY(1px); }
   width:100%;
   height:100%;
   object-fit: cover;
+  background: #1c2330;
   pointer-events:none;
   user-select:none;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
 
@@ -470,6 +530,18 @@ button.primary{
 }
 .onlineOnly{
   --sidebar-width: 360px;
+}
+.sidebar-collapsed #app{
+  grid-template-columns: 0 1fr;
+}
+.sidebar-collapsed #sidebar{
+  min-width: 0;
+  width: 0;
+  padding: 0;
+  border-right: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 #onlinePane{
   display: grid;
@@ -573,9 +645,40 @@ button.primary{
 .onlineFeatureList{
   margin-top: 8px;
   display: grid;
-  gap: 4px;
+  gap: 6px;
   max-height: 210px;
   overflow: auto;
+}
+.onlineFeatureSection{
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.02);
+  padding: 4px 6px 6px;
+}
+.onlineFeatureSection > summary{
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+}
+.onlineFeatureSection > summary::-webkit-details-marker{
+  display: none;
+}
+.onlineFeatureSection > summary::before{
+  content: ">";
+  display: inline-block;
+  width: 14px;
+  color: rgba(255,255,255,0.7);
+}
+.onlineFeatureSection[open] > summary::before{
+  content: "v";
+}
+.onlineFeatureRows{
+  margin-top: 6px;
+  display: grid;
+  gap: 4px;
 }
 .onlineFeatureRow{
   text-align: left;
@@ -593,6 +696,18 @@ button.primary{
 .onlineFeatureRow.active{
   border-color: rgba(255, 215, 110, 0.8);
   background: rgba(255, 215, 110, 0.2);
+}
+.onlineFeatureRow.tone-p1{
+  border-left: 3px solid rgba(40,155,255,0.95);
+}
+.onlineFeatureRow.tone-p2{
+  border-left: 3px solid rgba(255,70,70,0.95);
+}
+.onlineFeatureRow.tone-neutral{
+  border-left: 3px solid rgba(255,216,92,0.95);
+}
+.onlineFeatureRow.tone-tie{
+  border-left: 3px solid rgba(168,112,255,0.95);
 }
 #onlineNameInput,
 #onlineChatInput{
@@ -679,6 +794,10 @@ button.primary{
     border-bottom: 1px solid var(--line);
     max-height: 40vh;
   }
+  .sidebar-collapsed #sidebar{
+    max-height: 0;
+    border-bottom: 0;
+  }
   #appSplitter{
     display: none;
   }
@@ -687,6 +806,14 @@ button.primary{
   }
   #status{
     font-size: 12px;
+  }
+  #toolbarTop{
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  #boardTopInfo{
+    width: 100%;
+    order: 3;
   }
   .rpStages{
     grid-template-columns: 1fr;

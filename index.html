@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Carcassonne Online (Mobile)</title>
-  <link rel="stylesheet" href="style.css?v=391" />
+  <link rel="stylesheet" href="style.css?v=397" />
 </head>
 <body>
   <div id="app" class="onlineOnly">
@@ -22,16 +22,9 @@
 
         <details class="card onlineCollapse" open>
           <summary>Turn Actions</summary>
-          <div class="row">
-            <button id="onlineTileSubmitBtn" type="button">1) Submit Tile</button>
-            <button id="onlineTileResetBtn" type="button">Reset Tile</button>
-          </div>
-          <div class="row">
-            <button id="onlineTurnSubmitBtn" type="button">2) Submit Meeple + End</button>
-            <button id="onlineTurnSkipBtn" type="button">2) Skip Meeple + End</button>
-          </div>
           <div class="hint">
-            Place the drawn tile first, submit it, then optionally pick a marker and submit/skip meeple.
+            On your turn, tap an empty cell to place the drawn tile immediately.<br/>
+            Optionally tap a marker on that tile to select meeple placement, then use Confirm/Revert at top of board.
           </div>
         </details>
 
@@ -120,6 +113,14 @@
 
     <main id="main">
       <div id="toolbar">
+        <div id="toolbarTop">
+          <button id="toggleSidebarBtn" type="button" title="Collapse/expand left panel">Panel</button>
+          <div id="boardTopInfo">No active match.</div>
+          <div id="onlineBoardActions" class="hidden">
+            <button id="onlineConfirmBtn" type="button">Confirm</button>
+            <button id="onlineRevertBtn" type="button">Revert</button>
+          </div>
+        </div>
         <div id="status">Loading…</div>
       </div>
       <div id="boardWrap" tabindex="0" title="Tap/drag board. Wheel rotates selected tile in desktop browsers.">
@@ -129,6 +130,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=391"></script>
+  <script src="app.js?v=397"></script>
 </body>
 </html>

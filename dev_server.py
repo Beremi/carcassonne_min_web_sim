@@ -18,6 +18,7 @@ Endpoints:
   POST /api/invite/respond
 
   GET  /api/match?token=...
+  POST /api/match/intent
   POST /api/match/submit_turn
   POST /api/match/resign
 """
@@ -690,12 +691,15 @@ class MultiplayerState:
             match["finished_at"] = time.time()
             match["current_tile"] = None
             match["burned_turn"] = []
+            match["turn_intent"] = None
+            match["next_tiles"] = {1: None, 2: None}
             match["last_event"] = reason
 
         for uid in match["players"].values():
             user = self.users_by_id.get(uid)
             if user and user.get("match_id") == match_id:
                 user["match_id"] = None
+                user["last_match_id"] = match_id
 
     def _serialize_users_locked(self):
         users = []
@@ -750,6 +754,7 @@ class MultiplayerState:
             "invites_sent_by_me": invites_sent_by_me,
             "chat": self.chat[-90:],
             "current_match_id": user.get("match_id"),
+            "last_match_id": user.get("last_match_id"),
         }
 
     def _pick_random_tile_locked(self, remaining):
@@ -770,21 +775,49 @@ class MultiplayerState:
                 return tile_id
         return None
 
+    def _draw_reserved_tile_locked(self, match):
+        tile_id = self._pick_random_tile_locked(match["remaining"])
+        if not tile_id:
+            return None
+        match["remaining"][tile_id] = max(0, int(match["remaining"].get(tile_id, 0)) - 1)
+        return tile_id
+
+    def _ensure_next_tiles_locked(self, match):
+        if match.get("status") != "active":
+            return
+        next_tiles = match.setdefault("next_tiles", {1: None, 2: None})
+        turn_player = int(match.get("turn_player") or 1)
+        for player in (1, 2):
+            if player == turn_player:
+                continue
+            if next_tiles.get(player):
+                continue
+            tile_id = self._draw_reserved_tile_locked(match)
+            if not tile_id:
+                continue
+            next_tiles[player] = tile_id
+
     def _draw_placeable_tile_for_match_locked(self, match):
         burned = []
+        turn_player = int(match.get("turn_player") or 1)
+        next_tiles = match.setdefault("next_tiles", {1: None, 2: None})
         while True:
-            tile_id = self._pick_random_tile_locked(match["remaining"])
+            tile_id = next_tiles.get(turn_player)
+            if tile_id:
+                next_tiles[turn_player] = None
+            else:
+                tile_id = self._draw_reserved_tile_locked(match)
             if not tile_id:
                 match["current_tile"] = None
                 match["burned_turn"] = burned
                 self._finalize_match_locked(match)
                 return
 
-            match["remaining"][tile_id] = max(0, int(match["remaining"].get(tile_id, 0)) - 1)
-
             if self.engine.has_any_placement(match["board"], tile_id):
                 match["current_tile"] = tile_id
                 match["burned_turn"] = burned
+                match["turn_intent"] = None
+                self._ensure_next_tiles_locked(match)
                 return
 
             burned.append(tile_id)
@@ -825,6 +858,8 @@ class MultiplayerState:
             "turn_index": 1,
             "current_tile": None,
             "burned_turn": [],
+            "next_tiles": {1: None, 2: None},
+            "turn_intent": None,
             "last_event": "Match started.",
         }
 
@@ -834,6 +869,7 @@ class MultiplayerState:
             if user:
                 user["match_id"] = match_id
 
+        self._ensure_next_tiles_locked(match)
         self._draw_placeable_tile_for_match_locked(match)
         return match
 
@@ -917,6 +953,8 @@ class MultiplayerState:
         match["finished_at"] = time.time()
         match["current_tile"] = None
         match["burned_turn"] = []
+        match["turn_intent"] = None
+        match["next_tiles"] = {1: None, 2: None}
         match["last_event"] = "Match finished."
 
         p1 = match["score"].get(1, 0)
@@ -938,6 +976,7 @@ class MultiplayerState:
             user = self.users_by_id.get(uid)
             if user and user.get("match_id") == match["id"]:
                 user["match_id"] = None
+                user["last_match_id"] = match["id"]
 
     def _serialize_match_locked(self, match, for_user):
         players = []
@@ -976,6 +1015,22 @@ class MultiplayerState:
             }
 
         your_player = match["user_to_player"].get(for_user["id"])
+        next_tiles = match.get("next_tiles") or {}
+        your_next_tile = next_tiles.get(your_player) if your_player in (1, 2) else None
+        raw_intent = match.get("turn_intent")
+        turn_intent = None
+        if isinstance(raw_intent, dict):
+            turn_intent = {
+                "player": int(raw_intent.get("player") or 0),
+                "user_id": raw_intent.get("user_id"),
+                "tile_id": raw_intent.get("tile_id"),
+                "x": int(raw_intent.get("x") or 0),
+                "y": int(raw_intent.get("y") or 0),
+                "rot_deg": int(raw_intent.get("rot_deg") or 0),
+                "meeple_feature_id": raw_intent.get("meeple_feature_id"),
+                "locked": bool(raw_intent.get("locked")),
+                "valid": bool(raw_intent.get("valid", True)),
+            }
 
         payload = {
             "ok": True,
@@ -987,6 +1042,7 @@ class MultiplayerState:
                 "players": players,
                 "you_player": your_player,
                 "can_act": bool(match["status"] == "active" and your_player == turn_player),
+                "your_next_tile": your_next_tile,
                 "board": board_pairs,
                 "inst_seq": int(match["inst_seq"]),
                 "remaining": remaining,
@@ -997,6 +1053,7 @@ class MultiplayerState:
                     "2": int(match["meeples_available"].get(2, 0)),
                 },
                 "current_turn": current_turn,
+                "turn_intent": turn_intent,
                 "scored_keys": sorted(list(match["scored_keys"])),
                 "last_event": match.get("last_event") or "",
             },
@@ -1018,6 +1075,7 @@ class MultiplayerState:
                 "joined_at": now,
                 "last_seen": now,
                 "match_id": None,
+                "last_match_id": None,
             }
             self.users_by_id[user_id] = user
             self.user_by_token[token] = user_id
@@ -1173,15 +1231,98 @@ class MultiplayerState:
             if not user:
                 return None, "Invalid session token."
 
-            match_id = user.get("match_id")
+            match_id = user.get("match_id") or user.get("last_match_id")
             if not match_id:
                 return {"ok": True, "match": None}, None
 
             match = self.matches.get(match_id)
             if not match:
-                user["match_id"] = None
+                if user.get("match_id") == match_id:
+                    user["match_id"] = None
+                if user.get("last_match_id") == match_id:
+                    user["last_match_id"] = None
                 return {"ok": True, "match": None}, None
 
+            return self._serialize_match_locked(match, user), None
+
+    def match_intent(self, token, x, y, rot_deg, meeple_feature_id, clear=False, locked=False):
+        with self.lock:
+            self._cleanup_locked()
+            user = self._auth_user_locked(token)
+            if not user:
+                return None, "Invalid session token."
+
+            match_id = user.get("match_id")
+            if not match_id:
+                return None, "You are not in an active match."
+
+            match = self.matches.get(match_id)
+            if not match:
+                user["match_id"] = None
+                return None, "Match not found."
+
+            player = match["user_to_player"].get(user["id"])
+            if clear:
+                current_intent = match.get("turn_intent")
+                if not current_intent or current_intent.get("user_id") == user["id"]:
+                    match["turn_intent"] = None
+                return self._serialize_match_locked(match, user), None
+
+            if match.get("status") != "active":
+                return None, "Match is not active."
+            if player != match.get("turn_player"):
+                return None, "Only the active player can publish placement intent."
+
+            tile_id = match.get("current_tile")
+            if not tile_id:
+                return None, "No tile is currently assigned for this turn."
+
+            try:
+                rx = int(x)
+                ry = int(y)
+                rrot = int(rot_deg)
+            except Exception:
+                return None, "Invalid placement intent coordinates or rotation."
+
+            rrot = ((rrot % 360) + 360) % 360
+            if rrot not in (0, 90, 180, 270):
+                return None, "Rotation must be one of 0, 90, 180, 270."
+
+            cell_key = self.engine.key_xy(rx, ry)
+            if cell_key in match["board"]:
+                return None, "Cell occupied."
+
+            ok, reason = self.engine.can_place_at(match["board"], tile_id, rrot, rx, ry)
+            locked_intent = bool(locked)
+            if locked_intent and not ok:
+                return None, reason
+
+            selected_meeple_feature = None
+            if meeple_feature_id is not None:
+                fid = str(meeple_feature_id).strip()
+                if fid:
+                    selected_meeple_feature = fid
+
+            if selected_meeple_feature:
+                tile_rot = self.engine.rotate_tile(tile_id, rrot)
+                feature_by_id = {f.get("id"): f for f in (tile_rot.get("features") or [])}
+                feat = feature_by_id.get(selected_meeple_feature)
+                if not feat:
+                    return None, "Meeple feature id is invalid for the placed tile."
+                if feat.get("type") not in ("road", "city", "field", "cloister"):
+                    return None, "Meeple cannot be placed on that feature type."
+
+            match["turn_intent"] = {
+                "user_id": user["id"],
+                "player": int(player or 0),
+                "tile_id": tile_id,
+                "x": rx,
+                "y": ry,
+                "rot_deg": rrot,
+                "meeple_feature_id": selected_meeple_feature,
+                "locked": locked_intent,
+                "valid": bool(ok),
+            }
             return self._serialize_match_locked(match, user), None
 
     def match_submit_turn(self, token, x, y, rot_deg, meeple_feature_id):
@@ -1287,15 +1428,13 @@ class MultiplayerState:
             match["turn_index"] = int(match.get("turn_index", 0)) + 1
             match["current_tile"] = None
             match["burned_turn"] = []
+            match["turn_intent"] = None
             match["last_event"] = (
                 f"{user['name']} placed {tile_id} at ({rx},{ry}) r{rrot}"
                 + (f" + meeple {selected_meeple_feature}." if selected_meeple_feature else ".")
             )
 
-            if sum(max(0, int(v)) for v in match["remaining"].values()) <= 0:
-                self._finalize_match_locked(match)
-            else:
-                self._draw_placeable_tile_for_match_locked(match)
+            self._draw_placeable_tile_for_match_locked(match)
 
             return self._serialize_match_locked(match, user), None
 
@@ -1467,6 +1606,23 @@ class CarcassonneHandler(SimpleHTTPRequestHandler):
             self._write_json(res)
             return
 
+        if path == "/api/match/intent":
+            res, msg = STATE.match_intent(
+                payload.get("token"),
+                payload.get("x"),
+                payload.get("y"),
+                payload.get("rot_deg"),
+                payload.get("meeple_feature_id"),
+                payload.get("clear"),
+                payload.get("locked"),
+            )
+            if msg:
+                code = HTTPStatus.UNAUTHORIZED if "token" in msg.lower() else HTTPStatus.BAD_REQUEST
+                self._write_json({"ok": False, "error": msg}, status=code)
+                return
+            self._write_json(res)
+            return
+
         if path == "/api/match/submit_turn":
             res, msg = STATE.match_submit_turn(
                 payload.get("token"),
@@ -1505,7 +1661,7 @@ def main():
     server = ThreadingHTTPServer((args.host, args.port), CarcassonneHandler)
     print(f"Serving {ROOT} at http://{args.host}:{args.port}")
     print(f"Overrides file: {OVERRIDES_FILE}")
-    print("Multiplayer API enabled: /api/session/*, /api/lobby, /api/chat, /api/invite/*, /api/match/*")
+    print("Multiplayer API enabled: /api/session/*, /api/lobby, /api/chat, /api/invite/*, /api/match/* (including /api/match/intent)")
     server.serve_forever()
 
 

@@ -135,13 +135,16 @@ const state = {
   selectedCell: null,
   hoverCell: null,
   boardHot: false,
+  boardPanning: false,
+  sidebarCollapsed: false,
 
   hoverFeature: null, // { type, tiles:Set(cellKey), markers:[{cellKey,type,pt}], featureIdsByCell: Map(cellKey -> Set(localId)) }
   hoverMarkerKey: null, // "x,y:featureId" marker currently driving hoverFeature
   selectedScoreKey: null, // group key currently selected in score UI
   selectedScoreFeature: null, // {key,type,tiles,featureIdsByCell,nodeKeys,cityFeatureIdsByCell?,cityLabelsByCell?}
-  selectedScoreTone: null, // null|"neutral"
+  selectedScoreTone: null, // null|"neutral"|"p1"|"p2"|"tie"
   scoreDetailsOpen: { city: true, road: false, cloister: false, field: true },
+  onlineFeatureSectionsOpen: { open: true, closed: false },
   activeTab: "online",
   refine: { list: [], idx: 0, N: 256, brushR: 10, down: false, mode: "add", mask: null, tileId:null, featureId:null, featureType:null, canvas:null, ctx:null, baseImg:null, maskHashLoaded: 0, lastMouse: {x:0.5,y:0.5, has:false} },
   online: {
@@ -159,7 +162,10 @@ const state = {
     pendingMeepleFeatureId: null,
     localSnapshot: null,
     chatRenderedLastId: null,
-    matchRenderSig: null
+    matchRenderSig: null,
+    intentInFlight: false,
+    intentQueued: false,
+    lastIntentSig: ""
   }
 };
 
@@ -1042,11 +1048,35 @@ function makeTileImg(tileId){
     proto.draggable = false;
     tileImgCache.set(tileId, proto);
   }
-  const img = proto.cloneNode(false);
+  const img = new Image();
   img.className = "tileImg";
   img.draggable = false;
   img.alt = `Tile ${tileId}`;
+  img.loading = "eager";
+  img.decoding = "sync";
+  img.src = proto.currentSrc || proto.src || tileImageUrl(tileId);
   return img;
+}
+
+function preloadTileImage(tileId){
+  let proto = tileImgCache.get(tileId);
+  if(!proto){
+    proto = new Image();
+    proto.className = "tileImg";
+    proto.alt = `Tile ${tileId}`;
+    proto.draggable = false;
+    tileImgCache.set(tileId, proto);
+  }
+
+  const src = tileImageUrl(tileId);
+  if(proto.src !== src) proto.src = src;
+  if(proto.complete && proto.naturalWidth > 0) return Promise.resolve();
+
+  return new Promise((resolve)=>{
+    const done = ()=>resolve();
+    proto.addEventListener("load", done, {once:true});
+    proto.addEventListener("error", done, {once:true});
+  });
 }
 
 
@@ -1079,6 +1109,25 @@ function clearOnlinePendingTurn(){
   state.online.pendingTile = null;
   state.online.tileLocked = false;
   state.online.pendingMeepleFeatureId = null;
+  state.online.lastIntentSig = "";
+}
+
+function onlinePreviewTileForCursor(matchObj){
+  const m = matchObj || state.online.match;
+  if(!m || m.status!=="active") return null;
+  if(m.can_act) return m.current_turn?.tile_id || null;
+  return m.your_next_tile || null;
+}
+
+function onlineOpponentIntent(matchObj){
+  const m = matchObj || state.online.match;
+  if(!m || m.status!=="active") return null;
+  const intent = m.turn_intent;
+  if(!intent) return null;
+  const you = Number(m.you_player || 0);
+  const ip = Number(intent.player || 0);
+  if(ip<=0 || ip===you) return null;
+  return intent;
 }
 
 function applyOnlineMatchToBoardState(){
@@ -1086,6 +1135,7 @@ function applyOnlineMatchToBoardState(){
 
   const m = state.online.match;
   const prevSelectedCell = state.selectedCell;
+  const prevHoverCell = state.hoverCell;
   if(!m){
     state.board = new Map();
     state.instSeq = 1;
@@ -1112,11 +1162,17 @@ function applyOnlineMatchToBoardState(){
   const youPlayer = Number(m.you_player || 0);
   if(youPlayer===1 || youPlayer===2) setPlayer(youPlayer);
 
-  const turnTile = m.current_turn?.tile_id;
-  if(turnTile) state.selectedTileId = turnTile;
+  const previewTile = onlinePreviewTileForCursor(m) || m.current_turn?.tile_id;
+  if(previewTile) state.selectedTileId = previewTile;
 
   state.selectedCell = (prevSelectedCell && state.board.has(prevSelectedCell)) ? prevSelectedCell : null;
-  state.hoverCell = null;
+  const keepHover =
+    m.status==="active" &&
+    !!m.can_act &&
+    !state.online.pendingTile &&
+    !!prevHoverCell &&
+    !state.board.has(prevHoverCell);
+  state.hoverCell = keepHover ? prevHoverCell : null;
   clearHoverFeatureState();
   renderTileSelect();
   renderTilePalette();
@@ -1200,6 +1256,7 @@ function clearSimplifiedFeatureGeomCache(){
 let overridesSaveTimer = null;
 let overridesSaveChain = Promise.resolve();
 let overridesSaveWarned = false;
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "carc_sidebar_collapsed_v1";
 
 function emptyOverridesPayload(){
   return { schema:{coords:"normalized_0_1", fillRule:"evenodd"}, tiles:{} };
@@ -1534,6 +1591,7 @@ function rotateSelected(delta){
   }
   updateRotLabel();
   render();
+  if(isOnlineTab()) onlineQueueIntentPush();
 }
 
 function rotatedTile(tileId, rotDeg){
@@ -1549,10 +1607,24 @@ function rotatedTile(tileId, rotDeg){
     out.edges[e] = { primary: be.primary, feature: be.feature, halves: be.halves };
   }
   const merged = mergedFeaturesForTile(tileId);
+  const hasCloister = merged.some((f)=>f.type==="cloister");
   for(const f of merged){
     const rf = deepCopy(f);
     rf.ports = (rf.ports||[]).map(p=>rotPort(p, rotDeg));
-    // rf.meeple_placement left unchanged
+    if(
+      hasCloister &&
+      rf.type==="field" &&
+      Array.isArray(rf.meeple_placement) &&
+      rf.meeple_placement.length>=2
+    ){
+      const px = Number(rf.meeple_placement[0]);
+      const py = Number(rf.meeple_placement[1]);
+      rf.meeple_placement = [
+        Number.isFinite(px) ? px : 0.5,
+        Math.max(0.02, Math.min(0.98, (Number.isFinite(py) ? py : 0.5) - 0.25))
+      ];
+    }
+    // meeple_placement stays unrotated because tile DOM is rotated in CSS
     out.features.push(rf);
   }
   return out;
@@ -1836,9 +1908,28 @@ function randomizeMeeplesOnBoard(perPlayer=5){
   setStatus(`Random meeples placed — P1 ${placed[1]}/${perPlayer}, P2 ${placed[2]}/${perPlayer}.`);
 }
 
+function applySidebarCollapsed(collapsed){
+  state.sidebarCollapsed = !!collapsed;
+  document.body.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
+  const btn = $("#toggleSidebarBtn");
+  if(btn) btn.textContent = state.sidebarCollapsed ? "Panel +" : "Panel -";
+  try{
+    localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, state.sidebarCollapsed ? "1" : "0");
+  }catch(_err){}
+}
+
 function initUI(){
   $("#rotL").addEventListener("click", ()=>rotateSelected(-90));
   $("#rotR").addEventListener("click", ()=>rotateSelected(90));
+  $("#toggleSidebarBtn")?.addEventListener("click", ()=>{
+    applySidebarCollapsed(!state.sidebarCollapsed);
+  });
+  try{
+    const raw = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
+    applySidebarCollapsed(raw==="1");
+  }catch(_err){
+    applySidebarCollapsed(false);
+  }
 
   $("#useCounts").addEventListener("change", (e)=>{
     state.useCounts = e.target.checked;
@@ -1935,6 +2026,7 @@ function initUI(){
 
   // Board: wheel rotates, arrows scroll
   const wrap = $("#boardWrap");
+  const pan = {active:false, sx:0, sy:0, sl:0, st:0};
   wrap.addEventListener("mouseenter", ()=>{
     state.boardHot = true;
     wrap.focus({preventScroll:true});
@@ -1960,6 +2052,32 @@ function initUI(){
     else if(e.key==="ArrowRight"){ wrap.scrollLeft += step; e.preventDefault(); }
     else if(e.key==="ArrowUp"){ wrap.scrollTop -= step; e.preventDefault(); }
     else if(e.key==="ArrowDown"){ wrap.scrollTop += step; e.preventDefault(); }
+  });
+
+  wrap.addEventListener("contextmenu", (e)=>{
+    if(state.boardPanning || isOnlineTab()) e.preventDefault();
+  });
+  wrap.addEventListener("mousedown", (e)=>{
+    if(e.button!==2) return;
+    pan.active = true;
+    pan.sx = e.clientX;
+    pan.sy = e.clientY;
+    pan.sl = wrap.scrollLeft;
+    pan.st = wrap.scrollTop;
+    state.boardPanning = true;
+    wrap.classList.add("panning");
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", (e)=>{
+    if(!pan.active) return;
+    wrap.scrollLeft = pan.sl - (e.clientX - pan.sx);
+    wrap.scrollTop = pan.st - (e.clientY - pan.sy);
+  });
+  window.addEventListener("mouseup", ()=>{
+    if(!pan.active) return;
+    pan.active = false;
+    state.boardPanning = false;
+    wrap.classList.remove("panning");
   });
 
   // Tabs
@@ -2136,12 +2254,14 @@ function buildBoardGrid(size=25){
     if(state.hoverCell !== k){
       state.hoverCell = k;
       render();
+      if(isOnlineTab()) onlineQueueIntentPush();
     }
   });
 
   board.addEventListener("mouseleave", ()=>{
     state.hoverCell = null;
     render();
+    if(isOnlineTab()) onlineQueueIntentPush();
   });
 
   board.addEventListener("click", (e)=>{
@@ -2185,17 +2305,6 @@ function onOnlineBoardCellClick(x, y){
     return;
   }
 
-  if(state.online.tileLocked){
-    const pk = state.online.pendingTile ? keyXY(state.online.pendingTile.x, state.online.pendingTile.y) : null;
-    if(pk && pk===k){
-      state.selectedCell = k;
-      render();
-      return;
-    }
-    setStatus("Tile is locked. Submit meeple/skip or reset tile.");
-    return;
-  }
-
   const rot = state.selectedRot;
   const ok = canPlaceAt(drawnTileId, rot, x, y);
   if(!ok.ok){
@@ -2204,11 +2313,14 @@ function onOnlineBoardCellClick(x, y){
   }
 
   state.online.pendingTile = {x, y, rotDeg: rot, tileId: drawnTileId};
+  state.online.tileLocked = true;
   state.online.pendingMeepleFeatureId = null;
-  state.selectedCell = null;
+  state.selectedCell = keyXY(x,y);
   render();
   renderOnlineSidebar();
-  setStatus(`Prepared ${drawnTileId} at (${x},${y}) rot ${rot}°. Submit tile to continue.`);
+  renderBoardTopInfo();
+  onlineQueueIntentPush(true);
+  setStatus(`Prepared ${drawnTileId} at (${x},${y}) rot ${rot}°. Select meeple if wanted, then Confirm/Revert on top bar.`);
 }
 
 function onCellClick(e, x, y){
@@ -2253,8 +2365,8 @@ function onCellClick(e, x, y){
 
 function onCellRightClick(e, x, y){
   e.preventDefault();
+  if(state.boardPanning) return;
   if(isOnlineTab()){
-    setStatus("Tile removal is disabled in online matches.");
     return;
   }
   const k = keyXY(x,y);
@@ -2279,15 +2391,21 @@ function onCellRightClick(e, x, y){
   setStatus(`Removed tile at (${x},${y}). Scores recomputed.`);
 }
 
+function playerTintById(player, alpha){
+  if(player===2) return `rgba(255,70,70,${alpha})`;   // P2 red
+  return `rgba(40,155,255,${alpha})`;                 // P1 blue
+}
+
 function playerTint(alpha){
   // Color the highlight by currently selected player (placement intent)
-  return (state.selectedPlayer===1)
-    ? `rgba(40,155,255,${alpha})`   // P1 blue
-    : `rgba(255,70,70,${alpha})`;   // P2 red
+  return playerTintById(state.selectedPlayer, alpha);
 }
 
 function highlightTint(alpha, tone=null){
-  if(tone==="neutral") return `rgba(255, 216, 92, ${alpha})`;
+  if(tone==="neutral") return `rgba(255,216,92,${alpha})`;
+  if(tone==="tie") return `rgba(168,112,255,${alpha})`;
+  if(tone==="p1") return playerTintById(1, alpha);
+  if(tone==="p2") return playerTintById(2, alpha);
   return playerTint(alpha);
 }
 
@@ -2425,7 +2543,9 @@ function render(){
 
     if(state.selectedScoreFeature && state.selectedScoreFeature.tiles.has(k)){
       tileDiv.classList.add("scoreHl");
-      if(state.selectedScoreTone==="neutral") tileDiv.classList.add("neutral");
+      if(state.selectedScoreTone){
+        tileDiv.classList.add(`tone-${state.selectedScoreTone}`);
+      }
       const scoreLocalIds = state.selectedScoreFeature.featureIdsByCell.get(k);
       if(scoreLocalIds){
         addFeatureAreaOverlay(
@@ -2513,6 +2633,46 @@ function render(){
     }
   }
 
+  if(isOnlineTab()){
+    const intent = onlineOpponentIntent(state.online.match);
+    if(intent){
+      const ix = Number(intent.x);
+      const iy = Number(intent.y);
+      const irot = Number(intent.rot_deg) || 0;
+      const ik = keyXY(ix, iy);
+      if(Number.isFinite(ix) && Number.isFinite(iy) && !state.board.has(ik)){
+        const col = ix + half;
+        const row = iy + half;
+        if(col>=0 && col<size && row>=0 && row<size){
+          const idx = row*size + col;
+          const cell = boardEl.children[idx];
+          if(cell){
+            const isLocked = !!intent.locked;
+            const isValid = intent.valid !== false;
+            const tileDiv = document.createElement("div");
+            tileDiv.className = `tile remoteIntent ${Number(intent.player)===2 ? "p2" : "p1"}${isLocked ? " locked" : " cursor"}${isValid ? "" : " invalid"}`;
+            tileDiv.style.transform = `rotate(${irot}deg)`;
+            tileDiv.appendChild(makeTileImg(intent.tile_id));
+            cell.appendChild(tileDiv);
+            const mfid = intent.meeple_feature_id ? String(intent.meeple_feature_id) : "";
+            if(mfid){
+              const tile = rotatedTile(intent.tile_id, irot);
+              const feat = tile.features.find((f)=>f.id===mfid);
+              if(feat && Array.isArray(feat.meeple_placement) && feat.meeple_placement.length>=2){
+                const mee = document.createElement("div");
+                mee.className = `meeple ${Number(intent.player)===2 ? "p2" : "p1"}`;
+                mee.style.left = `${feat.meeple_placement[0]*100}%`;
+                mee.style.top = `${feat.meeple_placement[1]*100}%`;
+                mee.style.opacity = "0.8";
+                tileDiv.appendChild(mee);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Highlight markers (placements across group)
   if(state.hoverFeature){
     for(const m of state.hoverFeature.markers){
@@ -2575,6 +2735,7 @@ function renderOnlinePendingMeepleMarkers(tileDiv, pendingTile){
       else state.online.pendingMeepleFeatureId = f.id;
       renderOnlineSidebar();
       render();
+      onlineQueueIntentPush(true);
     });
 
     tileDiv.appendChild(mk);
@@ -2646,10 +2807,10 @@ function onlineInspectFeature(cellKey, localFeatureId){
   const groupByKey = new Map();
   for(const g of analysis.groups.values()) groupByKey.set(g.key, g);
   state.selectedScoreKey = group.key;
-  state.selectedScoreTone = "neutral";
+  state.selectedScoreTone = toneFromGroup(group);
   state.selectedScoreFeature = buildScoreSelectionFeature(analysis, group, groupByKey);
   render();
-  setStatus(`Inspecting ${group.type} feature ${localFeatureId} (neutral highlight).`);
+  setStatus(`Inspecting ${group.type} feature ${localFeatureId}.`);
 }
 
 function placeOrRemoveMeeple(cellKey, inst, featureLocalId){
@@ -3075,6 +3236,13 @@ function winnersOfGroup(g){
   return ws;
 }
 
+function toneFromGroup(g){
+  const ws = winnersOfGroup(g);
+  if(ws.length===0) return "neutral";
+  if(ws.length>=2) return "tie";
+  return ws[0]===2 ? "p2" : "p1";
+}
+
 function addFeatureIdForCell(featureIdsByCell, cellKey, localId){
   if(!featureIdsByCell.has(cellKey)) featureIdsByCell.set(cellKey, new Set());
   featureIdsByCell.get(cellKey).add(localId);
@@ -3418,6 +3586,9 @@ async function onlineConnect(){
   state.online.match = null;
   state.online.pollBusy = false;
   state.online.matchRenderSig = null;
+  state.online.intentInFlight = false;
+  state.online.intentQueued = false;
+  state.online.lastIntentSig = "";
   clearOnlinePendingTurn();
 
   try{ localStorage.setItem(ONLINE_NAME_STORAGE_KEY, state.online.userName); }catch(_err){}
@@ -3448,6 +3619,9 @@ async function onlineDisconnect(sendLeave=true){
   state.online.match = null;
   state.online.pollBusy = false;
   state.online.matchRenderSig = null;
+  state.online.intentInFlight = false;
+  state.online.intentQueued = false;
+  state.online.lastIntentSig = "";
   clearOnlinePendingTurn();
 
   if(isOnlineTab()){
@@ -3467,7 +3641,8 @@ async function onlinePoll(force=false){
     const lobby = await onlineApiGet(`/api/lobby?token=${encodeURIComponent(state.online.token)}`);
     state.online.lobby = lobby;
 
-    if(lobby.current_match_id){
+    const hasMatchContext = !!(lobby.current_match_id || lobby.last_match_id);
+    if(hasMatchContext){
       const mres = await onlineApiGet(`/api/match?token=${encodeURIComponent(state.online.token)}`);
       state.online.match = mres.match || null;
     }else{
@@ -3478,9 +3653,9 @@ async function onlinePoll(force=false){
     if(state.online.match?.status!=="active"){
       clearOnlinePendingTurn();
     }else{
-      const turnTile = state.online.match?.current_turn?.tile_id;
-      if(turnTile){
-        state.selectedTileId = turnTile;
+      const previewTile = onlinePreviewTileForCursor(state.online.match) || state.online.match?.current_turn?.tile_id;
+      if(previewTile){
+        state.selectedTileId = previewTile;
         updateTilePreview();
       }
       if(!state.online.match?.can_act){
@@ -3493,9 +3668,9 @@ async function onlinePoll(force=false){
     if(sigChanged) state.online.matchRenderSig = nextSig;
 
     const preserveLocalPending =
-      !!state.online.pendingTile &&
       state.online.match?.status==="active" &&
-      state.online.match?.can_act;
+      state.online.match?.can_act &&
+      (!!state.online.pendingTile || !!state.hoverCell);
 
     if(isOnlineTab() && (force || sigChanged) && !preserveLocalPending){
       applyOnlineMatchToBoardState();
@@ -3557,10 +3732,98 @@ function onlineMatchCanAct(){
   return !!(state.online.connected && state.online.match?.status==="active" && state.online.match?.can_act);
 }
 
+function onlineLocalIntentCandidate(){
+  if(!onlineMatchCanAct()) return null;
+  const turnTile = state.online.match?.current_turn?.tile_id;
+  if(!turnTile) return null;
+
+  if(state.online.pendingTile){
+    const p = state.online.pendingTile;
+    return {
+      x: p.x,
+      y: p.y,
+      rotDeg: p.rotDeg,
+      meepleFeatureId: state.online.pendingMeepleFeatureId || null,
+      locked: !!state.online.tileLocked,
+      valid: true
+    };
+  }
+
+  if(!state.hoverCell) return null;
+  const {x, y} = parseXY(state.hoverCell);
+  const cellKey = keyXY(x, y);
+  if(state.board.has(cellKey)) return null;
+  const rot = state.selectedRot;
+  const ok = canPlaceAt(turnTile, rot, x, y);
+  return {
+    x,
+    y,
+    rotDeg: rot,
+    meepleFeatureId: null,
+    locked: false,
+    valid: !!ok.ok
+  };
+}
+
+function onlineCurrentIntentSignature(){
+  const c = onlineLocalIntentCandidate();
+  if(!c) return "none";
+  return JSON.stringify({
+    x: c.x,
+    y: c.y,
+    r: c.rotDeg,
+    m: c.meepleFeatureId || null,
+    l: !!c.locked,
+    v: !!c.valid
+  });
+}
+
+async function onlinePushIntentNow(){
+  if(!state.online.connected || !state.online.token || !state.online.match) return;
+  const payload = { token: state.online.token };
+  const c = onlineLocalIntentCandidate();
+  if(c){
+    payload.x = c.x;
+    payload.y = c.y;
+    payload.rot_deg = c.rotDeg;
+    payload.meeple_feature_id = c.meepleFeatureId || null;
+    payload.locked = !!c.locked;
+  }else{
+    payload.clear = true;
+  }
+  try{
+    await onlineApiPost("/api/match/intent", payload);
+  }catch(_err){
+    // Best-effort preview sync only.
+  }
+}
+
+function onlineQueueIntentPush(force=false){
+  if(!state.online.connected || !state.online.match) return;
+  const sig = onlineCurrentIntentSignature();
+  if(!force && sig===state.online.lastIntentSig) return;
+  state.online.lastIntentSig = sig;
+  if(state.online.intentInFlight){
+    state.online.intentQueued = true;
+    return;
+  }
+  state.online.intentInFlight = true;
+  onlinePushIntentNow()
+    .catch(()=>{})
+    .finally(()=>{
+      state.online.intentInFlight = false;
+      if(state.online.intentQueued){
+        state.online.intentQueued = false;
+        onlineQueueIntentPush(true);
+      }
+    });
+}
+
 function onlineMatchSignature(match){
   if(!match) return "none";
   const turn = match.current_turn || {};
   const score = match.score || {};
+  const intent = match.turn_intent || null;
   const players = Array.isArray(match.players) ? match.players.map(p=>({
     p: p.player,
     s: p.score,
@@ -3577,6 +3840,8 @@ function onlineMatchSignature(match){
     s1: Number(score["1"] ?? score[1] ?? 0),
     s2: Number(score["2"] ?? score[2] ?? 0),
     p: players,
+    yt: match.you_next_tile || "",
+    it: intent ? [intent.player, intent.user_id, intent.tile_id, intent.x, intent.y, intent.rot_deg, intent.meeple_feature_id || "", intent.locked ? 1 : 0, intent.valid ? 1 : 0] : null,
     e: match.last_event || ""
   });
 }
@@ -3607,7 +3872,9 @@ function onlineResetTileLocal(){
   state.selectedCell = null;
   clearHoverFeatureState();
   renderOnlineSidebar();
+  renderBoardTopInfo();
   render();
+  onlineQueueIntentPush(true);
 }
 
 async function onlineSubmitTurn(skipMeeple){
@@ -3616,7 +3883,7 @@ async function onlineSubmitTurn(skipMeeple){
     return;
   }
   if(!state.online.pendingTile || !state.online.tileLocked){
-    setStatus("Submit tile first.");
+    setStatus("Place tile first.");
     return;
   }
 
@@ -3635,8 +3902,10 @@ async function onlineSubmitTurn(skipMeeple){
     if(isOnlineTab()) applyOnlineMatchToBoardState();
     renderOnlineSidebar();
     if(isOnlineTab()) renderOnlineScorePanel();
+    renderBoardTopInfo();
     setStatus("Turn submitted.");
   }catch(err){
+    renderBoardTopInfo();
     setStatus(`Turn rejected: ${err?.message || err}`);
   }
 }
@@ -3670,6 +3939,42 @@ function onlineComputeProjection(analysis){
   };
 }
 
+function renderBoardTopInfo(analysis){
+  const infoEl = $("#boardTopInfo");
+  const actWrap = $("#onlineBoardActions");
+  const confirmBtn = $("#onlineConfirmBtn");
+  const revertBtn = $("#onlineRevertBtn");
+  if(!infoEl) return;
+
+  if(!state.online.connected || !state.online.match){
+    infoEl.textContent = "No active match.";
+    if(actWrap) actWrap.classList.add("hidden");
+    return;
+  }
+
+  const m = state.online.match;
+  const p1 = m.players?.find(p=>p.player===1);
+  const p2 = m.players?.find(p=>p.player===2);
+  const a = analysis || analyzeBoard();
+  const proj = onlineComputeProjection(a);
+  const now = `Now ${p1?.name || "P1"} ${state.score[1]} - ${state.score[2]} ${p2?.name || "P2"}`;
+  const fin = `If end now ${proj.finalNow[1]} - ${proj.finalNow[2]}`;
+  if(m.status==="active"){
+    const t = m.current_turn;
+    const nextMine = (!m.can_act && m.your_next_tile) ? ` | Next for you ${m.your_next_tile}` : "";
+    infoEl.textContent = `Turn ${t?.turn_index || 0}: ${t?.name || "?"} | Draw ${t?.tile_id || "?"}${nextMine} | ${now} | ${fin}`;
+  }else if(m.status==="finished"){
+    infoEl.textContent = "Finished.";
+  }else{
+    infoEl.textContent = `Match ${m.status}.`;
+  }
+
+  const showActions = onlineMatchCanAct() && !!state.online.pendingTile;
+  if(actWrap) actWrap.classList.toggle("hidden", !showActions);
+  if(confirmBtn) confirmBtn.disabled = !showActions;
+  if(revertBtn) revertBtn.disabled = !showActions;
+}
+
 function renderOnlineScorePanel(analysis){
   const summaryEl = $("#onlineScoreSummary");
   const listEl = $("#onlineFeatureList");
@@ -3678,11 +3983,20 @@ function renderOnlineScorePanel(analysis){
   if(!state.online.connected || !state.online.match){
     summaryEl.innerHTML = `<div class="hint">No active online match.</div>`;
     listEl.innerHTML = "";
+    renderBoardTopInfo();
     return;
   }
 
+  const m = state.online.match;
   const a = analysis || analyzeBoard();
-  const proj = onlineComputeProjection(a);
+  const proj = (m.status==="active")
+    ? onlineComputeProjection(a)
+    : {
+        endNow: {1:0, 2:0},
+        ifCompleteNow: {1:0, 2:0},
+        finalNow: {1: state.score[1], 2: state.score[2]}
+      };
+  renderBoardTopInfo(a);
   summaryEl.innerHTML = `
     <table class="scoreTable scoreSummaryTable">
       <thead>
@@ -3696,7 +4010,8 @@ function renderOnlineScorePanel(analysis){
 
   const typeLabel = {city:"City", road:"Road", cloister:"Cloister", field:"Field"};
   const typeCount = {city:0, road:0, cloister:0, field:0};
-  const entries = [];
+  const openEntries = [];
+  const closedEntries = [];
 
   for(const g of a.groups.values()){
     const ws = winnersOfGroup(g);
@@ -3706,29 +4021,56 @@ function renderOnlineScorePanel(analysis){
     const pts = scoreEndNowValue(g);
     const p1 = ws.includes(1) ? pts : 0;
     const p2 = ws.includes(2) ? pts : 0;
-    entries.push({
+    const entry = {
       key: g.key,
       order: {city:0, road:1, cloister:2, field:3}[g.type],
       idx: typeCount[g.type],
+      tone: toneFromGroup(g),
       label: `${typeLabel[g.type]} #${typeCount[g.type]} | ${groupStatusText(g)} | P1:+${p1} P2:+${p2}`
+    };
+    const isClosed = (g.type!=="field") && !!g.complete;
+    if(isClosed) closedEntries.push(entry);
+    else openEntries.push(entry);
+  }
+  openEntries.sort((x,y)=>x.order-y.order || x.idx-y.idx);
+  closedEntries.sort((x,y)=>x.order-y.order || x.idx-y.idx);
+
+  const renderEntryRows = (entries)=>{
+    if(entries.length===0){
+      return `<div class="hint">No entries.</div>`;
+    }
+    return entries.map((entry)=>{
+      const active = state.selectedScoreKey===entry.key ? " active" : "";
+      const toneCls = entry.tone ? ` tone-${entry.tone}` : "";
+      return `<button type="button" class="onlineFeatureRow${active}${toneCls}" data-score-key="${escHtml(entry.key)}" data-score-tone="${escHtml(entry.tone || "neutral")}">${escHtml(entry.label)}</button>`;
+    }).join("");
+  };
+
+  listEl.innerHTML = `
+    <details class="onlineFeatureSection"${state.onlineFeatureSectionsOpen.open ? " open" : ""} data-online-feature-section="open">
+      <summary>Open / In-progress (${openEntries.length})</summary>
+      <div class="onlineFeatureRows">${renderEntryRows(openEntries)}</div>
+    </details>
+    <details class="onlineFeatureSection"${state.onlineFeatureSectionsOpen.closed ? " open" : ""} data-online-feature-section="closed">
+      <summary>Closed (${closedEntries.length})</summary>
+      <div class="onlineFeatureRows">${renderEntryRows(closedEntries)}</div>
+    </details>
+  `;
+
+  for(const det of listEl.querySelectorAll(".onlineFeatureSection")){
+    det.addEventListener("toggle", ()=>{
+      const key = det.getAttribute("data-online-feature-section");
+      if(!key) return;
+      if(key==="open" || key==="closed"){
+        state.onlineFeatureSectionsOpen[key] = det.open;
+      }
     });
   }
-  entries.sort((a,b)=>a.order-b.order || a.idx-b.idx);
-
-  if(entries.length===0){
-    listEl.innerHTML = `<div class="hint">No claimed features yet.</div>`;
-    return;
-  }
-
-  listEl.innerHTML = entries.map((entry)=>{
-    const active = state.selectedScoreKey===entry.key ? " active" : "";
-    return `<button type="button" class="onlineFeatureRow${active}" data-score-key="${escHtml(entry.key)}">${escHtml(entry.label)}</button>`;
-  }).join("");
-
   for(const btn of listEl.querySelectorAll(".onlineFeatureRow")){
     const key = btn.dataset.scoreKey;
     if(!key) continue;
-    btn.addEventListener("click", ()=>setSelectedScoreKey(key, "neutral"));
+    const tone = btn.dataset.scoreTone || null;
+    btn.addEventListener("click", ()=>setSelectedScoreKey(key, tone));
   }
 }
 
@@ -3742,10 +4084,6 @@ function renderOnlineSidebar(){
 
   const connectBtn = $("#onlineConnectBtn");
   const disconnectBtn = $("#onlineDisconnectBtn");
-  const tileSubmitBtn = $("#onlineTileSubmitBtn");
-  const tileResetBtn = $("#onlineTileResetBtn");
-  const turnSubmitBtn = $("#onlineTurnSubmitBtn");
-  const turnSkipBtn = $("#onlineTurnSkipBtn");
 
   if(connectBtn) connectBtn.disabled = state.online.connected;
   if(disconnectBtn) disconnectBtn.disabled = !state.online.connected;
@@ -3762,10 +4100,7 @@ function renderOnlineSidebar(){
     if(chatEl) chatEl.innerHTML = `<div class="hint">No chat.</div>`;
     if(matchEl) matchEl.textContent = "No active match.";
     if(meepleEl) meepleEl.textContent = "Meeple selection: none.";
-    if(tileSubmitBtn) tileSubmitBtn.disabled = true;
-    if(tileResetBtn) tileResetBtn.disabled = true;
-    if(turnSubmitBtn) turnSubmitBtn.disabled = true;
-    if(turnSkipBtn) turnSkipBtn.disabled = true;
+    renderBoardTopInfo();
     return;
   }
 
@@ -3851,29 +4186,26 @@ function renderOnlineSidebar(){
       const p1 = m.players?.find(p=>p.player===1);
       const p2 = m.players?.find(p=>p.player===2);
       const t = m.current_turn;
+      const nextMine = (!m.can_act && m.your_next_tile) ? `<br/>Your next tile: <b>${escHtml(m.your_next_tile)}</b>.` : "";
       matchEl.innerHTML = `
         P1 ${escHtml(p1?.name || "P1")} (meeples ${p1?.meeples_left ?? 0}) vs
         P2 ${escHtml(p2?.name || "P2")} (meeples ${p2?.meeples_left ?? 0})<br/>
         Turn ${t?.turn_index || 0}: ${escHtml(t?.name || "?" )} draws <b>${escHtml(t?.tile_id || "?")}</b>.
         ${Array.isArray(t?.burned) && t.burned.length ? `Burned before draw: ${escHtml(t.burned.join(", "))}.` : ""}
+        ${nextMine}
       `;
+    }else if(m.status==="finished"){
+      matchEl.textContent = "Finished.";
     }else{
-      const p1 = m.players?.find(p=>p.player===1);
-      const p2 = m.players?.find(p=>p.player===2);
-      matchEl.innerHTML = `Match ${escHtml(m.status)}. Final: ${escHtml(p1?.name || "P1")} ${p1?.score ?? 0} - ${p2?.score ?? 0} ${escHtml(p2?.name || "P2")}.`;
+      matchEl.textContent = `Match ${escHtml(m.status)}.`;
     }
   }
-
-  const canAct = onlineMatchCanAct();
-  if(tileSubmitBtn) tileSubmitBtn.disabled = !(canAct && !!state.online.pendingTile && !state.online.tileLocked);
-  if(tileResetBtn) tileResetBtn.disabled = !(canAct && !!state.online.pendingTile);
-  if(turnSubmitBtn) turnSubmitBtn.disabled = !(canAct && !!state.online.pendingTile && !!state.online.tileLocked);
-  if(turnSkipBtn) turnSkipBtn.disabled = !(canAct && !!state.online.pendingTile && !!state.online.tileLocked);
 
   if(meepleEl){
     const sel = state.online.pendingMeepleFeatureId;
     meepleEl.textContent = sel ? `Meeple selection: ${sel}.` : "Meeple selection: none.";
   }
+  renderBoardTopInfo();
 }
 
 function initOnlineUI(){
@@ -3906,14 +4238,10 @@ function initOnlineUI(){
     onlineSendChat().catch(()=>{});
   });
 
-  $("#onlineTileSubmitBtn")?.addEventListener("click", ()=>onlineSubmitTileLocal());
-  $("#onlineTileResetBtn")?.addEventListener("click", ()=>onlineResetTileLocal());
-  $("#onlineTurnSubmitBtn")?.addEventListener("click", ()=>{
+  $("#onlineConfirmBtn")?.addEventListener("click", ()=>{
     onlineSubmitTurn(false).catch(()=>{});
   });
-  $("#onlineTurnSkipBtn")?.addEventListener("click", ()=>{
-    onlineSubmitTurn(true).catch(()=>{});
-  });
+  $("#onlineRevertBtn")?.addEventListener("click", ()=>onlineResetTileLocal());
 
   window.addEventListener("beforeunload", ()=>{
     if(!state.online.connected || !state.online.token) return;
@@ -3925,6 +4253,7 @@ function initOnlineUI(){
 
   renderOnlineSidebar();
   renderOnlineScorePanel();
+  renderBoardTopInfo();
 }
 // ------------------ end Online lobby/match ------------------
 
@@ -5382,12 +5711,7 @@ async function main(){
   state.remaining = deepCopy(state.counts);
 
   for(const t of tileset.tiles) state.tileById.set(t.id, t);
-  for(const tileId of state.tileById.keys()){
-    if(tileImgCache.has(tileId)) continue;
-    const img = new Image();
-    img.src = tileImageUrl(tileId);
-    tileImgCache.set(tileId, img);
-  }
+  await Promise.allSettled(Array.from(state.tileById.keys()).map((tileId)=>preloadTileImage(tileId)));
 
   // Default highlight areas: procedurally generated from edge ports (coarse, always connected)
   try{
