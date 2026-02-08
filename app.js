@@ -145,6 +145,8 @@ const state = {
   selectedScoreTone: null, // null|"neutral"|"p1"|"p2"|"tie"
   scoreDetailsOpen: { city: true, road: false, cloister: false, field: true },
   onlineFeatureSectionsOpen: { open: true, closed: false },
+  controlModePref: "auto", // "auto"|"desktop"|"mobile"
+  boardCellPx: 64,
   activeTab: "online",
   refine: { list: [], idx: 0, N: 256, brushR: 10, down: false, mode: "add", mask: null, tileId:null, featureId:null, featureType:null, canvas:null, ctx:null, baseImg:null, maskHashLoaded: 0, lastMouse: {x:0.5,y:0.5, has:false} },
   online: {
@@ -165,9 +167,27 @@ const state = {
     matchRenderSig: null,
     intentInFlight: false,
     intentQueued: false,
-    lastIntentSig: ""
+    lastIntentSig: "",
+    touch: {
+      holdTimer: null,
+      holdCellKey: null,
+      holdStartX: 0,
+      holdStartY: 0,
+      suppressClickUntil: 0,
+      pinchActive: false,
+      pinchStartDist: 0,
+      pinchStartCellPx: 64
+    }
   }
 };
+
+const ONLINE_NAME_STORAGE_KEY = "carc_online_name_v1";
+const ONLINE_CONTROL_MODE_STORAGE_KEY = "carc_online_control_mode_v1";
+const BOARD_CELL_PX_STORAGE_KEY = "carc_board_cell_px_v1";
+const MOBILE_HOLD_MS = 460;
+const MOBILE_HOLD_MOVE_CANCEL_PX = 12;
+const MIN_BOARD_CELL_PX = 40;
+const MAX_BOARD_CELL_PX = 120;
 
 function clearHoverFeatureState(){
   state.hoverFeature = null;
@@ -1048,13 +1068,15 @@ function makeTileImg(tileId){
     proto.draggable = false;
     tileImgCache.set(tileId, proto);
   }
-  const img = new Image();
+  const img = proto.cloneNode(false);
   img.className = "tileImg";
   img.draggable = false;
   img.alt = `Tile ${tileId}`;
   img.loading = "eager";
-  img.decoding = "sync";
-  img.src = proto.currentSrc || proto.src || tileImageUrl(tileId);
+  img.decoding = "async";
+  if(!img.src){
+    img.src = proto.currentSrc || proto.src || tileImageUrl(tileId);
+  }
   return img;
 }
 
@@ -1136,6 +1158,8 @@ function applyOnlineMatchToBoardState(){
   const m = state.online.match;
   const prevSelectedCell = state.selectedCell;
   const prevHoverCell = state.hoverCell;
+  const pendingTile = state.online.pendingTile;
+  const pendingKey = pendingTile ? keyXY(pendingTile.x, pendingTile.y) : null;
   if(!m){
     state.board = new Map();
     state.instSeq = 1;
@@ -1166,10 +1190,12 @@ function applyOnlineMatchToBoardState(){
   if(previewTile) state.selectedTileId = previewTile;
 
   state.selectedCell = (prevSelectedCell && state.board.has(prevSelectedCell)) ? prevSelectedCell : null;
+  if(pendingKey && !state.board.has(pendingKey)){
+    state.selectedCell = pendingKey;
+  }
   const keepHover =
-    m.status==="active" &&
-    !!m.can_act &&
-    !state.online.pendingTile &&
+    !state.online.tileLocked &&
+    !pendingTile &&
     !!prevHoverCell &&
     !state.board.has(prevHoverCell);
   state.hoverCell = keepHover ? prevHoverCell : null;
@@ -1584,6 +1610,76 @@ function cellStepPx(){
   return cell + gap;
 }
 
+function isCoarsePointerDevice(){
+  try{
+    if(window.matchMedia && window.matchMedia("(pointer: coarse)").matches) return true;
+  }catch(_err){}
+  if(typeof navigator!=="undefined" && Number(navigator.maxTouchPoints || 0) > 0) return true;
+  return ("ontouchstart" in window);
+}
+
+function effectiveControlMode(){
+  if(state.controlModePref==="desktop") return "desktop";
+  if(state.controlModePref==="mobile") return "mobile";
+  return isCoarsePointerDevice() ? "mobile" : "desktop";
+}
+
+function isMobileControlMode(){
+  return effectiveControlMode()==="mobile";
+}
+
+function clampBoardCellPx(px){
+  const n = Number(px);
+  if(!Number.isFinite(n)) return state.boardCellPx || 64;
+  return Math.max(MIN_BOARD_CELL_PX, Math.min(MAX_BOARD_CELL_PX, Math.round(n)));
+}
+
+function setBoardCellPx(px, persist=true){
+  const next = clampBoardCellPx(px);
+  const wrap = $("#boardWrap");
+  let cx = 0;
+  let cy = 0;
+  let oldStep = 0;
+  if(wrap){
+    oldStep = cellStepPx();
+    cx = wrap.scrollLeft + (wrap.clientWidth / 2);
+    cy = wrap.scrollTop + (wrap.clientHeight / 2);
+  }
+
+  state.boardCellPx = next;
+  document.documentElement.style.setProperty("--cell", `${next}px`);
+
+  if(wrap && oldStep > 0){
+    const newStep = cellStepPx();
+    const scale = newStep / oldStep;
+    wrap.scrollLeft = (cx * scale) - (wrap.clientWidth / 2);
+    wrap.scrollTop = (cy * scale) - (wrap.clientHeight / 2);
+  }
+  if(persist){
+    try{ localStorage.setItem(BOARD_CELL_PX_STORAGE_KEY, String(next)); }catch(_err){}
+  }
+}
+
+function controlModeHintText(){
+  if(isMobileControlMode()){
+    return "Mobile controls: tap empty cell to preview, tap same preview to rotate, hold on preview to lock/place tile, pinch board to zoom.";
+  }
+  return "Desktop controls: click empty cell to place+lock tile immediately, then Confirm/Revert.";
+}
+
+function applyControlModePreference(mode, persist=true){
+  const pref = (mode==="desktop" || mode==="mobile") ? mode : "auto";
+  state.controlModePref = pref;
+  if(persist){
+    try{ localStorage.setItem(ONLINE_CONTROL_MODE_STORAGE_KEY, pref); }catch(_err){}
+  }
+
+  const sel = $("#onlineControlMode");
+  if(sel && sel.value!==pref) sel.value = pref;
+  const hint = $("#onlineControlHint");
+  if(hint) hint.textContent = controlModeHintText();
+}
+
 function rotateSelected(delta){
   state.selectedRot = (state.selectedRot + delta + 360) % 360;
   if(isOnlineTab() && state.online.pendingTile && !state.online.tileLocked){
@@ -1931,6 +2027,27 @@ function initUI(){
     applySidebarCollapsed(false);
   }
 
+  let pref = "auto";
+  try{
+    const raw = localStorage.getItem(ONLINE_CONTROL_MODE_STORAGE_KEY) || "auto";
+    if(raw==="desktop" || raw==="mobile" || raw==="auto") pref = raw;
+  }catch(_err){}
+  applyControlModePreference(pref, false);
+  $("#onlineControlMode")?.addEventListener("change", (e)=>{
+    applyControlModePreference(String(e.target.value || "auto"), true);
+  });
+  window.addEventListener("resize", ()=>{
+    if(state.controlModePref==="auto") applyControlModePreference("auto", false);
+  });
+
+  try{
+    const raw = Number(localStorage.getItem(BOARD_CELL_PX_STORAGE_KEY));
+    if(Number.isFinite(raw) && raw > 0) setBoardCellPx(raw, false);
+    else setBoardCellPx(parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--cell")) || 64, false);
+  }catch(_err){
+    setBoardCellPx(64, false);
+  }
+
   $("#useCounts").addEventListener("change", (e)=>{
     state.useCounts = e.target.checked;
     renderTileSelect();
@@ -2079,6 +2196,81 @@ function initUI(){
     state.boardPanning = false;
     wrap.classList.remove("panning");
   });
+
+  const touchDist = (a, b)=>{
+    const dx = Number(a.clientX || 0) - Number(b.clientX || 0);
+    const dy = Number(a.clientY || 0) - Number(b.clientY || 0);
+    return Math.hypot(dx, dy);
+  };
+
+  wrap.addEventListener("touchstart", (e)=>{
+    const t = state.online.touch;
+    if(!t) return;
+    if(!isOnlineTab() || !isMobileControlMode()) return;
+
+    if(e.touches.length===2){
+      clearMobileHoldTimer();
+      t.pinchActive = true;
+      t.pinchStartDist = touchDist(e.touches[0], e.touches[1]);
+      t.pinchStartCellPx = state.boardCellPx || parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--cell")) || 64;
+      t.suppressClickUntil = Date.now() + 420;
+      e.preventDefault();
+      return;
+    }
+    if(e.touches.length!==1 || t.pinchActive) return;
+
+    const touch = e.touches[0];
+    const el = document.elementFromPoint(touch.clientX, touch.clientY)?.closest?.(".cell");
+    if(!el) return;
+    const x = Number(el.dataset.x);
+    const y = Number(el.dataset.y);
+    if(!Number.isFinite(x) || !Number.isFinite(y)) return;
+
+    const p = state.online.pendingTile;
+    if(!state.online.tileLocked && p && p.x===x && p.y===y){
+      armMobileHoldToLock(x, y, touch.clientX, touch.clientY);
+    }else{
+      clearMobileHoldTimer();
+    }
+  }, {passive:false});
+
+  wrap.addEventListener("touchmove", (e)=>{
+    const t = state.online.touch;
+    if(!t) return;
+    if(!isOnlineTab() || !isMobileControlMode()) return;
+
+    if(t.pinchActive){
+      if(e.touches.length===2){
+        const d = touchDist(e.touches[0], e.touches[1]);
+        if(t.pinchStartDist > 0){
+          setBoardCellPx((t.pinchStartCellPx || state.boardCellPx || 64) * (d / t.pinchStartDist), false);
+        }
+        e.preventDefault();
+      }
+      return;
+    }
+    if(!t.holdTimer || e.touches.length!==1) return;
+
+    const touch = e.touches[0];
+    const dx = Number(touch.clientX || 0) - Number(t.holdStartX || 0);
+    const dy = Number(touch.clientY || 0) - Number(t.holdStartY || 0);
+    if(Math.hypot(dx,dy) > MOBILE_HOLD_MOVE_CANCEL_PX){
+      clearMobileHoldTimer();
+    }
+  }, {passive:false});
+
+  const finishTouchState = ()=>{
+    const t = state.online.touch;
+    if(!t) return;
+    clearMobileHoldTimer();
+    if(t.pinchActive){
+      t.pinchActive = false;
+      try{ localStorage.setItem(BOARD_CELL_PX_STORAGE_KEY, String(state.boardCellPx)); }catch(_err){}
+      t.suppressClickUntil = Date.now() + 420;
+    }
+  };
+  wrap.addEventListener("touchend", finishTouchState, {passive:true});
+  wrap.addEventListener("touchcancel", finishTouchState, {passive:true});
 
   // Tabs
   const tp = $("#tabPlay");
@@ -2275,7 +2467,138 @@ function clearSelection(){
   render();
 }
 
+function clearMobileHoldTimer(){
+  const t = state.online.touch;
+  if(!t) return;
+  if(t.holdTimer){
+    clearTimeout(t.holdTimer);
+    t.holdTimer = null;
+  }
+  t.holdCellKey = null;
+}
+
+function onlineMobileLockPending(expectedCellKey=null){
+  if(!onlineMatchCanAct()) return false;
+  const p = state.online.pendingTile;
+  if(!p || state.online.tileLocked) return false;
+  if(expectedCellKey && keyXY(p.x, p.y)!==expectedCellKey) return false;
+  const ok = canPlaceAt(p.tileId, p.rotDeg, p.x, p.y);
+  if(!ok.ok){
+    setStatus(ok.reason);
+    return false;
+  }
+  state.online.tileLocked = true;
+  state.selectedCell = keyXY(p.x, p.y);
+  render();
+  renderOnlineSidebar();
+  renderBoardTopInfo();
+  onlineQueueIntentPush(true);
+  setStatus(`Tile locked at (${p.x},${p.y}). Select meeple if wanted, then Confirm.`);
+  return true;
+}
+
+function armMobileHoldToLock(x, y, clientX, clientY){
+  const t = state.online.touch;
+  if(!t) return;
+  clearMobileHoldTimer();
+  t.holdStartX = Number(clientX) || 0;
+  t.holdStartY = Number(clientY) || 0;
+  t.holdCellKey = keyXY(x, y);
+  t.holdTimer = setTimeout(()=>{
+    t.holdTimer = null;
+    if(onlineMobileLockPending(t.holdCellKey)){
+      t.suppressClickUntil = Date.now() + 420;
+    }
+  }, MOBILE_HOLD_MS);
+}
+
+function onOnlineBoardCellTapMobile(x, y){
+  if(!state.online.connected){
+    setStatus("Connect to the online server first.");
+    return;
+  }
+
+  const k = keyXY(x, y);
+  if(state.board.has(k)){
+    state.selectedCell = k;
+    clearHoverFeatureState();
+    render();
+    setStatus("Tile selected. Tap a marker to inspect that connected feature.");
+    return;
+  }
+
+  if(!onlineMatchIsActive()){
+    setStatus("No active match. Invite a player from the lobby.");
+    return;
+  }
+  if(!state.online.match?.can_act){
+    setStatus("Wait for your turn.");
+    return;
+  }
+
+  const drawnTileId = state.online.match?.current_turn?.tile_id;
+  if(!drawnTileId){
+    setStatus("No tile assigned yet.");
+    return;
+  }
+
+  const pending = state.online.pendingTile;
+  if(state.online.tileLocked){
+    setStatus("Tile is locked. Confirm or Revert.");
+    return;
+  }
+
+  if(!pending){
+    const rot = state.selectedRot;
+    const ok = canPlaceAt(drawnTileId, rot, x, y);
+    if(!ok.ok){
+      setStatus(ok.reason);
+      return;
+    }
+    state.online.pendingTile = {x, y, rotDeg: rot, tileId: drawnTileId};
+    state.online.pendingMeepleFeatureId = null;
+    state.selectedCell = k;
+    render();
+    renderOnlineSidebar();
+    renderBoardTopInfo();
+    onlineQueueIntentPush(true);
+    setStatus(`Preview ${drawnTileId} at (${x},${y}) rot ${rot}°. Tap same tile to rotate, hold to lock.`);
+    return;
+  }
+
+  if(pending.x===x && pending.y===y){
+    pending.rotDeg = (pending.rotDeg + 90) % 360;
+    state.selectedRot = pending.rotDeg;
+    const ok = canPlaceAt(pending.tileId, pending.rotDeg, x, y);
+    updateRotLabel();
+    render();
+    renderBoardTopInfo();
+    onlineQueueIntentPush(true);
+    if(ok.ok) setStatus(`Preview rotation ${pending.rotDeg}°. Hold to lock tile.`);
+    else setStatus(`Rotation ${pending.rotDeg}° is invalid here. Tap again to rotate.`);
+    return;
+  }
+
+  const ok = canPlaceAt(pending.tileId, pending.rotDeg, x, y);
+  if(!ok.ok){
+    setStatus(ok.reason);
+    return;
+  }
+  pending.x = x;
+  pending.y = y;
+  state.selectedCell = k;
+  render();
+  renderOnlineSidebar();
+  renderBoardTopInfo();
+  onlineQueueIntentPush(true);
+  setStatus(`Preview moved to (${x},${y}). Tap to rotate, hold to lock.`);
+}
+
 function onOnlineBoardCellClick(x, y){
+  if(isMobileControlMode()){
+    onOnlineBoardCellTapMobile(x, y);
+    return;
+  }
   if(!state.online.connected){
     setStatus("Connect to the online server first.");
     return;
@@ -2325,6 +2648,10 @@ function onOnlineBoardCellClick(x, y){
 
 function onCellClick(e, x, y){
   if(isOnlineTab()){
+    if(isMobileControlMode() && Date.now() < (state.online.touch?.suppressClickUntil || 0)){
+      e?.preventDefault?.();
+      return;
+    }
     onOnlineBoardCellClick(x, y);
     return;
   }
@@ -2621,6 +2948,10 @@ function render(){
         const tileDiv = document.createElement("div");
         tileDiv.className = "tile pending";
         if(state.online.tileLocked) tileDiv.classList.add("locked");
+        if(!state.online.tileLocked){
+          const ok = canPlaceAt(p.tileId, p.rotDeg, p.x, p.y);
+          if(!ok.ok) tileDiv.classList.add("invalid");
+        }
         tileDiv.style.transform = `rotate(${p.rotDeg}deg)`;
         tileDiv.appendChild(makeTileImg(p.tileId));
         cell.appendChild(tileDiv);
@@ -3508,7 +3839,6 @@ function renderScores(analysis){
 }
 
 // -------------------- Online lobby/match --------------------
-const ONLINE_NAME_STORAGE_KEY = "carc_online_name_v1";
 
 async function onlineApiGet(path){
   const res = await fetch(path, {cache:"no-store"});
@@ -3667,12 +3997,16 @@ async function onlinePoll(force=false){
     const sigChanged = nextSig !== state.online.matchRenderSig;
     if(sigChanged) state.online.matchRenderSig = nextSig;
 
-    const preserveLocalPending =
-      state.online.match?.status==="active" &&
-      state.online.match?.can_act &&
-      (!!state.online.pendingTile || !!state.hoverCell);
+    const serverBoardLen = Array.isArray(state.online.match?.board) ? state.online.match.board.length : 0;
+    const boardOrScoreChanged =
+      !!state.online.match &&
+      (
+        state.board.size !== serverBoardLen ||
+        state.score[1] !== Number(state.online.match?.score?.["1"] ?? state.online.match?.score?.[1] ?? 0) ||
+        state.score[2] !== Number(state.online.match?.score?.["2"] ?? state.online.match?.score?.[2] ?? 0)
+      );
 
-    if(isOnlineTab() && (force || sigChanged) && !preserveLocalPending){
+    if(isOnlineTab() && (force || sigChanged || boardOrScoreChanged)){
       applyOnlineMatchToBoardState();
     }
     renderOnlineSidebar();
@@ -3969,7 +4303,7 @@ function renderBoardTopInfo(analysis){
     infoEl.textContent = `Match ${m.status}.`;
   }
 
-  const showActions = onlineMatchCanAct() && !!state.online.pendingTile;
+  const showActions = onlineMatchCanAct() && !!state.online.pendingTile && !!state.online.tileLocked;
   if(actWrap) actWrap.classList.toggle("hidden", !showActions);
   if(confirmBtn) confirmBtn.disabled = !showActions;
   if(revertBtn) revertBtn.disabled = !showActions;

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Carcassonne Online (Mobile)</title>
-  <link rel="stylesheet" href="style.css?v=397" />
+  <link rel="stylesheet" href="style.css?v=400" />
 </head>
 <body>
   <div id="app" class="onlineOnly">
@@ -66,6 +66,16 @@
             <div id="rotLabel">Rotation: 0°</div>
             <button id="rotR" title="Rotate right">⟳</button>
           </div>
+
+          <div class="row">
+            <label for="onlineControlMode">Controls</label>
+            <select id="onlineControlMode">
+              <option value="auto">Auto</option>
+              <option value="mobile">Mobile</option>
+              <option value="desktop">Desktop</option>
+            </select>
+          </div>
+          <div id="onlineControlHint" class="hint">Desktop controls: click empty cell to place+lock tile immediately, then Confirm/Revert.</div>
 
           <div class="row">
             <label class="chk"><input type="checkbox" id="simplifiedGraphics"> Simplified graphics</label>
@@ -130,6 +140,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=397"></script>
+  <script src="app.js?v=400"></script>
 </body>
 </html>
