@@ -12,6 +12,7 @@ import com.carcassonne.lan.model.PollRequest
 import com.carcassonne.lan.model.PollResponse
 import com.carcassonne.lan.model.SubmitTurnRequest
 import com.carcassonne.lan.model.SubmitTurnResponse
+import com.carcassonne.lan.model.TurnIntentRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -117,6 +118,44 @@ class LanClient {
             serializer = SubmitTurnRequest.serializer(),
             responseSerializer = SubmitTurnResponse.serializer(),
         )
+
+    suspend fun publishTurnIntent(
+        session: ClientSession,
+        x: Int,
+        y: Int,
+        rotDeg: Int,
+        meepleFeatureId: String? = null,
+        locked: Boolean = false,
+    ): Boolean {
+        val out = postJson(
+            host = session.hostAddress,
+            port = session.port,
+            path = "/api/match/intent",
+            body = TurnIntentRequest(
+                token = session.token,
+                x = x,
+                y = y,
+                rotDeg = rotDeg,
+                meepleFeatureId = meepleFeatureId,
+                locked = locked,
+            ),
+            serializer = TurnIntentRequest.serializer(),
+            responseSerializer = com.carcassonne.lan.model.GenericOkResponse.serializer(),
+        )
+        return out.ok
+    }
+
+    suspend fun clearTurnIntent(session: ClientSession): Boolean {
+        val out = postJson(
+            host = session.hostAddress,
+            port = session.port,
+            path = "/api/match/intent/clear",
+            body = HeartbeatRequest(token = session.token),
+            serializer = HeartbeatRequest.serializer(),
+            responseSerializer = com.carcassonne.lan.model.GenericOkResponse.serializer(),
+        )
+        return out.ok
+    }
 
     suspend fun heartbeat(session: ClientSession): Boolean {
         val out = postJson(

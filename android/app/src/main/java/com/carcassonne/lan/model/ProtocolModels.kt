@@ -57,6 +57,16 @@ data class SubmitTurnRequest(
 )
 
 @Serializable
+data class TurnIntentRequest(
+    val token: String,
+    val x: Int,
+    val y: Int,
+    val rotDeg: Int,
+    val meepleFeatureId: String? = null,
+    val locked: Boolean = false,
+)
+
+@Serializable
 data class SubmitTurnResponse(
     val ok: Boolean,
     val match: MatchState? = null,

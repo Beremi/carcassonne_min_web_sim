@@ -83,3 +83,34 @@ Deployment script overrides:
 ```bash
 LAN_PORT=18473 ./scripts/build_install_dual_emulators.sh emulator-5554 emulator-5556
 ```
+
+## Troubleshooting: `Too many open files` / QThreadPipe crash
+
+If you see:
+
+- `QThreadPipe: Unable to create pipe: Too many open files`
+- `Fatal: QEventDispatcherUNIXPrivate(): Cannot continue without a thread pipe`
+
+use this sequence:
+
+```bash
+cd /home/ber0061/Repositories/carcassonne_min_web_sim/android
+
+# 1) kill stale emulator/adb processes
+adb kill-server || true
+pkill -f "qemu-system-x86_64.*-avd" || true
+pkill -f "/Android/Sdk/emulator/emulator.*-avd" || true
+
+# 2) set higher fd limit in the current shell
+ulimit -n 65535
+ulimit -n
+
+# 3) start emulators again with scripts
+./scripts/start_first_emulator.sh
+./scripts/start_second_emulator.sh
+```
+
+Notes:
+
+- The start scripts now auto-check FD limits and clean stale emulator instances bound to the same ports.
+- If `ulimit -n 65535` fails, your user hard limit is low; set a higher `nofile` limit in system config and reopen terminal.

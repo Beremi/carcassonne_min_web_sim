@@ -2,6 +2,7 @@ package com.carcassonne.lan.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -16,17 +17,20 @@ private const val DEFAULT_PORT = 18473
 data class AppSettings(
     val playerName: String,
     val port: Int,
+    val simplifiedView: Boolean,
 )
 
 class SettingsRepository(private val context: Context) {
     private val keyPlayerName = stringPreferencesKey("player_name")
     private val keyPort = intPreferencesKey("lan_port")
+    private val keySimplifiedView = booleanPreferencesKey("simplified_view")
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { prefs ->
         val storedName = prefs[keyPlayerName].orEmpty()
         val safeName = NameGenerator.ensureNumericSuffix(storedName)
         val port = sanitizePort(prefs[keyPort])
-        AppSettings(playerName = safeName, port = port)
+        val simplified = prefs[keySimplifiedView] ?: false
+        AppSettings(playerName = safeName, port = port, simplifiedView = simplified)
     }
 
     suspend fun initializeDefaultsIfNeeded() {
@@ -38,15 +42,17 @@ class SettingsRepository(private val context: Context) {
                 prefs[keyPlayerName] = NameGenerator.ensureNumericSuffix(name)
             }
             prefs[keyPort] = sanitizePort(prefs[keyPort])
+            prefs[keySimplifiedView] = prefs[keySimplifiedView] ?: false
         }
     }
 
-    suspend fun save(playerName: String, port: Int) {
+    suspend fun save(playerName: String, port: Int, simplifiedView: Boolean) {
         val safeName = NameGenerator.ensureNumericSuffix(playerName)
         val safePort = sanitizePort(port)
         context.dataStore.edit { prefs ->
             prefs[keyPlayerName] = safeName
             prefs[keyPort] = safePort
+            prefs[keySimplifiedView] = simplifiedView
         }
     }
 

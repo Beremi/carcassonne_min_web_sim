@@ -10,6 +10,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.random.Random
@@ -74,5 +75,84 @@ class HostGameManagerTest {
         val poll = manager.poll(reconnect.token.orEmpty())
         assertTrue(poll.ok)
         assertEquals("Remote2000", poll.match?.players?.get(2)?.name)
+    }
+
+    @Test
+    fun turnIntentBroadcastsAndClearsOnSubmit() {
+        val engine = CarcassonneEngine(simpleTileset())
+        val manager = HostGameManager(engine = engine, random = Random(11), nowMs = { 2000L })
+
+        val hostToken = manager.configureHostPlayer("Host1000")
+        val inviteId = manager.sendInvite("Remote2000").inviteId.orEmpty()
+        manager.respondInvite(inviteId, "accept")
+        val join = manager.joinOrReconnect("Remote2000")
+        assertTrue(join.ok)
+        val remoteToken = join.token.orEmpty()
+        assertTrue(remoteToken.isNotBlank())
+
+        val match = join.match ?: error("missing match")
+        val turnPlayer = match.turnState.player
+        val actingToken = if (turnPlayer == 1) hostToken else remoteToken
+        val watchingToken = if (turnPlayer == 1) remoteToken else hostToken
+
+        val intent = manager.publishTurnIntent(
+            token = actingToken,
+            x = 1,
+            y = 0,
+            rotDeg = 90,
+            meepleFeatureId = null,
+            locked = false,
+        )
+        assertTrue(intent.ok)
+
+        val watched = manager.poll(watchingToken)
+        assertTrue(watched.ok)
+        assertEquals(1, watched.match?.turnState?.intent?.x)
+        assertEquals(0, watched.match?.turnState?.intent?.y)
+        assertEquals(90, watched.match?.turnState?.intent?.rotDeg)
+
+        val submit = manager.submitTurn(
+            token = actingToken,
+            x = 1,
+            y = 0,
+            rotDeg = 90,
+            meepleFeatureId = null,
+        )
+        assertTrue(submit.ok)
+        assertNull(submit.match?.turnState?.intent)
+    }
+
+    @Test
+    fun clearTurnIntentRemovesPreviewForOpponent() {
+        val engine = CarcassonneEngine(simpleTileset())
+        val manager = HostGameManager(engine = engine, random = Random(13), nowMs = { 3000L })
+
+        val hostToken = manager.configureHostPlayer("Host1000")
+        val inviteId = manager.sendInvite("Remote2000").inviteId.orEmpty()
+        manager.respondInvite(inviteId, "accept")
+        val join = manager.joinOrReconnect("Remote2000")
+        assertTrue(join.ok)
+        val remoteToken = join.token.orEmpty()
+        val match = join.match ?: error("missing match")
+        val turnPlayer = match.turnState.player
+        val actingToken = if (turnPlayer == 1) hostToken else remoteToken
+        val watchingToken = if (turnPlayer == 1) remoteToken else hostToken
+
+        val publish = manager.publishTurnIntent(
+            token = actingToken,
+            x = 0,
+            y = 1,
+            rotDeg = 180,
+            meepleFeatureId = "field1",
+            locked = true,
+        )
+        assertTrue(publish.ok)
+
+        val clear = manager.clearTurnIntent(actingToken)
+        assertTrue(clear.ok)
+
+        val watched = manager.poll(watchingToken)
+        assertTrue(watched.ok)
+        assertNull(watched.match?.turnState?.intent)
     }
 }

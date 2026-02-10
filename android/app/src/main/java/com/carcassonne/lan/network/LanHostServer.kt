@@ -7,6 +7,7 @@ import com.carcassonne.lan.model.InviteRespondRequest
 import com.carcassonne.lan.model.JoinRequest
 import com.carcassonne.lan.model.PollRequest
 import com.carcassonne.lan.model.SubmitTurnRequest
+import com.carcassonne.lan.model.TurnIntentRequest
 import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -255,6 +256,45 @@ class LanHostServer(
                     jsonResponse(
                         status = if (res.ok) Response.Status.OK else Response.Status.BAD_REQUEST,
                         serializer = com.carcassonne.lan.model.SubmitTurnResponse.serializer(),
+                        payload = res,
+                    )
+                }
+
+                "/api/match/intent" -> {
+                    val req = decodeBody(session, TurnIntentRequest.serializer())
+                        ?: return badRequest("Invalid JSON payload.")
+                    val res = manager.publishTurnIntent(
+                        token = req.token,
+                        x = req.x,
+                        y = req.y,
+                        rotDeg = req.rotDeg,
+                        meepleFeatureId = req.meepleFeatureId,
+                        locked = req.locked,
+                    )
+                    if (res.ok) {
+                        ioScope.launch {
+                            metadataStore.saveHost(manager.snapshot())
+                        }
+                    }
+                    jsonResponse(
+                        status = if (res.ok) Response.Status.OK else Response.Status.BAD_REQUEST,
+                        serializer = GenericOkResponse.serializer(),
+                        payload = res,
+                    )
+                }
+
+                "/api/match/intent/clear" -> {
+                    val req = decodeBody(session, HeartbeatRequest.serializer())
+                        ?: return badRequest("Invalid JSON payload.")
+                    val res = manager.clearTurnIntent(req.token)
+                    if (res.ok) {
+                        ioScope.launch {
+                            metadataStore.saveHost(manager.snapshot())
+                        }
+                    }
+                    jsonResponse(
+                        status = if (res.ok) Response.Status.OK else Response.Status.UNAUTHORIZED,
+                        serializer = GenericOkResponse.serializer(),
                         payload = res,
                     )
                 }

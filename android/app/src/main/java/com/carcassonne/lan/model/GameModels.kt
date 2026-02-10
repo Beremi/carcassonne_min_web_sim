@@ -39,6 +39,19 @@ data class TurnState(
     val tileId: String? = null,
     val turnIndex: Int = 1,
     val burnedTiles: List<String> = emptyList(),
+    val intent: TurnIntentState? = null,
+)
+
+@Serializable
+data class TurnIntentState(
+    val player: Int,
+    val tileId: String,
+    val x: Int,
+    val y: Int,
+    val rotDeg: Int,
+    val meepleFeatureId: String? = null,
+    val locked: Boolean = false,
+    val updatedAtEpochMs: Long,
 )
 
 @Serializable

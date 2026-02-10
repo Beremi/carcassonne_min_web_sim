@@ -167,6 +167,41 @@ class CarcassonneEngine(
         return RotatedTile(id = tileId, edges = edges, features = features)
     }
 
+    fun baseFeatures(tileId: String): List<TileFeature> {
+        return tileById[tileId]?.features.orEmpty()
+    }
+
+    fun featureType(tileId: String, featureLocalId: String): String? {
+        return tileById[tileId]
+            ?.features
+            ?.firstOrNull { it.id == featureLocalId }
+            ?.type
+    }
+
+    fun featurePlacementNormalized(
+        tileId: String,
+        featureLocalId: String,
+        rotDeg: Int,
+    ): Pair<Float, Float>? {
+        val feature = tileById[tileId]
+            ?.features
+            ?.firstOrNull { it.id == featureLocalId }
+            ?: return null
+        val px = feature.meeplePlacement.getOrNull(0)?.toFloat() ?: 0.5f
+        val py = feature.meeplePlacement.getOrNull(1)?.toFloat() ?: 0.5f
+        return rotateNormalized(px, py, rotDeg)
+    }
+
+    private fun rotateNormalized(x: Float, y: Float, rotDeg: Int): Pair<Float, Float> {
+        val rot = ((rotDeg % 360) + 360) % 360
+        return when (rot) {
+            90 -> Pair(1f - y, x)
+            180 -> Pair(1f - x, 1f - y)
+            270 -> Pair(y, 1f - x)
+            else -> Pair(x, y)
+        }
+    }
+
     private fun withinBounds(x: Int, y: Int): Boolean =
         kotlin.math.abs(x) <= boardHalfSpan && kotlin.math.abs(y) <= boardHalfSpan
 

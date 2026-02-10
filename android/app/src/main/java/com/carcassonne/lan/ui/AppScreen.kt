@@ -1,6 +1,7 @@
 package com.carcassonne.lan.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,13 +10,22 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -27,9 +37,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -287,42 +299,28 @@ private fun MatchScreen(
         return
     }
 
-    Column(
+    val p1 = match.players[1]
+    val p2 = match.players[2]
+    val remainingTiles = match.remaining.values.sumOf { it.coerceAtLeast(0) }
+    val p1Meeples = match.meeplesAvailable[1] ?: 0
+    val p2Meeples = match.meeplesAvailable[2] ?: 0
+    var topPanelExpanded by rememberSaveable { mutableStateOf(true) }
+    var scorePanelExpanded by rememberSaveable { mutableStateOf(false) }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp),
     ) {
-        val p1 = match.players[1]
-        val p2 = match.players[2]
-        Text(
-            text = "${p1?.name ?: "P1"} ${match.score[1] ?: 0} - ${match.score[2] ?: 0} ${p2?.name ?: "Waiting"}",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = if (match.status == MatchStatus.ACTIVE) {
-                "Turn ${match.turnState.turnIndex}: P${match.turnState.player} | tile ${match.turnState.tileId ?: "-"}"
-            } else {
-                "Match status: ${match.status.name}"
-            }
-        )
-        Text(
-            text = if (state.canAct) {
-                "Tap to preview/rotate. Long-press to lock tile. Tap marker for meeple. Confirm/Revert near tile."
-            } else {
-                "Waiting. You can still pan/zoom the board."
-            },
-            style = MaterialTheme.typography.bodySmall,
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
         BoardView(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
+            modifier = Modifier.fillMaxSize(),
             match = match,
+            viewerPlayer = session.player,
+            activePlayer = match.turnState.player,
+            simplifiedView = state.settings.simplifiedView,
+            tileVisuals = state.tileVisuals,
+            boardMeeples = state.boardMeeples,
+            selectedScoreHighlights = state.selectedScoreHighlights,
             preview = state.preview,
             lockedPlacement = state.lockedPlacement,
             onTapCell = onTapCell,
@@ -332,35 +330,263 @@ private fun MatchScreen(
             onRevertPlacement = onRevertPlacement,
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onDisconnect) {
-                Text("Disconnect")
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                PanelToggleButton(
+                    expanded = topPanelExpanded,
+                    expandWhenCollapsedUp = false,
+                    contentDescription = if (topPanelExpanded) "Hide top panel" else "Show top panel",
+                    onToggle = { topPanelExpanded = !topPanelExpanded },
+                )
             }
-            Text(
-                text = "You: ${session.playerName} (P${session.player})",
-                modifier = Modifier.align(Alignment.CenterVertically),
+
+            if (topPanelExpanded) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp),
+                    color = Color(0x9EFFFFFF),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = "${p1?.name ?: "P1"} ${match.score[1] ?: 0} - ${match.score[2] ?: 0} ${p2?.name ?: "Waiting"}",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            text = if (match.status == MatchStatus.ACTIVE) {
+                                "Turn ${match.turnState.turnIndex}: P${match.turnState.player} | tile ${match.turnState.tileId ?: "-"}"
+                            } else {
+                                "Match status: ${match.status.name}"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Text(
+                            text = if (state.canAct) {
+                                "Tap to place/rotate. Invalid spots stay visible with a cross. Long-press to lock."
+                            } else {
+                                "Waiting. You can still pan and zoom."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            OutlinedButton(onClick = onDisconnect) {
+                                Text("Disconnect")
+                            }
+                            Text(
+                                text = "You: ${session.playerName} (P${session.player})",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+            MatchResourceStrip(
+                p1Meeples = p1Meeples,
+                p2Meeples = p2Meeples,
+                remainingTiles = remainingTiles,
             )
         }
-        Spacer(modifier = Modifier.height(6.dp))
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(bottom = 2.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (scorePanelExpanded) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp),
+                    color = Color(0x86FFFFFF),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    ScorePanel(groups = state.scoreGroups)
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+
+            PanelToggleButton(
+                expanded = scorePanelExpanded,
+                expandWhenCollapsedUp = true,
+                contentDescription = if (scorePanelExpanded) "Hide scoreboard" else "Show scoreboard",
+                onToggle = { scorePanelExpanded = !scorePanelExpanded },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScorePanel(
+    groups: List<ScoreGroupState>,
+) {
+    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+        Text("Scoring Areas", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+        if (groups.isEmpty()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("No active scoring areas yet.", style = MaterialTheme.typography.bodySmall)
+            return
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp, max = 180.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            items(groups) { group ->
+                Text(
+                    text = "${group.type.uppercase()}: P1:${group.p1Score} | P2:${group.p2Score}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MatchResourceStrip(
+    p1Meeples: Int,
+    p2Meeples: Int,
+    remainingTiles: Int,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        MeepleCounterDot(
+            color = Color(0xFF2B6BE1),
+            label = "P1",
+            count = p1Meeples,
+        )
+        Spacer(modifier = Modifier.width(16.dp))
+        MeepleCounterDot(
+            color = Color(0xFFD53E3E),
+            label = "P2",
+            count = p2Meeples,
+        )
+        Spacer(modifier = Modifier.width(18.dp))
+        TileCounterSquare(remainingTiles = remainingTiles)
+    }
+}
+
+@Composable
+private fun MeepleCounterDot(
+    color: Color,
+    label: String,
+    count: Int,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(12.dp)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Text(
+            text = "$label $count",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF1A1A1A),
+        )
+    }
+}
+
+@Composable
+private fun TileCounterSquare(remainingTiles: Int) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(13.dp)
+                .border(width = 1.4.dp, color = Color(0xFF463019)),
+        )
+        Text(
+            text = "$remainingTiles",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF1A1A1A),
+        )
+    }
+}
+
+@Composable
+private fun PanelToggleButton(
+    expanded: Boolean,
+    expandWhenCollapsedUp: Boolean,
+    contentDescription: String,
+    onToggle: () -> Unit,
+) {
+    val icon = when {
+        expanded && expandWhenCollapsedUp -> Icons.Filled.ExpandMore
+        expanded && !expandWhenCollapsedUp -> Icons.Filled.ExpandLess
+        !expanded && expandWhenCollapsedUp -> Icons.Filled.ExpandLess
+        else -> Icons.Filled.ExpandMore
+    }
+    Surface(
+        shape = CircleShape,
+        color = Color(0x96FFFFFF),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        IconButton(
+            onClick = onToggle,
+            modifier = Modifier.size(30.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = Color(0xFF1E1E1E),
+            )
+        }
     }
 }
 
 @Composable
 private fun SettingsScreen(
     state: AppUiState,
-    onSave: (String, String) -> Unit,
+    onSave: (String, String, Boolean) -> Unit,
     onRefreshLocalIps: () -> Unit,
     onProbeIp: (String) -> Unit,
 ) {
     var playerName by remember(state.settings.playerName) { mutableStateOf(state.settings.playerName) }
     var port by remember(state.settings.port) { mutableStateOf(state.settings.port.toString()) }
+    var simplifiedView by remember(state.settings.simplifiedView) { mutableStateOf(state.settings.simplifiedView) }
     var probeTargetIp by remember { mutableStateOf("") }
 
-    LaunchedEffect(state.settings.playerName, state.settings.port) {
+    LaunchedEffect(state.settings.playerName, state.settings.port, state.settings.simplifiedView) {
         playerName = state.settings.playerName
         port = state.settings.port.toString()
+        simplifiedView = state.settings.simplifiedView
     }
 
     Column(
@@ -396,8 +622,20 @@ private fun SettingsScreen(
 
         Text("Default port is 18473. Change if the network uses a conflicting service.")
 
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Checkbox(
+                checked = simplifiedView,
+                onCheckedChange = { simplifiedView = it },
+            )
+            Text("Simplified view")
+        }
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { onSave(playerName, port) }) {
+            Button(onClick = { onSave(playerName, port, simplifiedView) }) {
                 Text("Save")
             }
             Spacer(modifier = Modifier.width(8.dp))

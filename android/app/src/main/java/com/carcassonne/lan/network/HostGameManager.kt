@@ -17,6 +17,7 @@ import com.carcassonne.lan.model.PlayerSlot
 import com.carcassonne.lan.model.PlayerSummary
 import com.carcassonne.lan.model.PollResponse
 import com.carcassonne.lan.model.SubmitTurnResponse
+import com.carcassonne.lan.model.TurnIntentState
 import com.carcassonne.lan.model.TurnState
 import java.util.UUID
 import kotlin.random.Random
@@ -71,13 +72,25 @@ class HostGameManager(
         if (saved == null) return
         synchronized(lock) {
             if (saved.board.isEmpty()) return@synchronized
-            match = saved.copy(updatedAtEpochMs = nowMs())
+            var restored = saved.copy(
+                updatedAtEpochMs = nowMs(),
+                turnState = saved.turnState.copy(intent = null),
+            )
+            val restoredP2 = restored.players[2]
+            if (restoredP2 != null) {
+                // After process/app restart, treat remote slot as offline until it reconnects.
+                val players = restored.players.toMutableMap()
+                players[2] = restoredP2.copy(connected = false)
+                restored = restored.copy(players = players)
+            }
+            match = restored
             nextMatchId = extractNextMatchId(saved.id)
             val p1 = saved.players[1]
             if (p1 != null) {
                 hostName = p1.name
                 hostToken = p1.token
             }
+            cleanupDisconnectedOpponentLocked()
         }
     }
 
@@ -238,6 +251,7 @@ class HostGameManager(
     }
 
     fun heartbeat(token: String): GenericOkResponse = synchronized(lock) {
+        cleanupInvitesLocked()
         val slot = playerByToken(token)
         if (slot == null) {
             GenericOkResponse(ok = false, error = "Invalid session token.")
@@ -250,11 +264,56 @@ class HostGameManager(
     }
 
     fun poll(token: String): PollResponse = synchronized(lock) {
+        cleanupInvitesLocked()
         val slot = playerByToken(token)
             ?: return@synchronized PollResponse(ok = false, error = "Invalid session token.")
 
         val canAct = match.status == MatchStatus.ACTIVE && slot.player == match.turnState.player
         PollResponse(ok = true, canAct = canAct, match = match)
+    }
+
+    fun publishTurnIntent(
+        token: String,
+        x: Int,
+        y: Int,
+        rotDeg: Int,
+        meepleFeatureId: String?,
+        locked: Boolean,
+    ): GenericOkResponse = synchronized(lock) {
+        cleanupInvitesLocked()
+        val slot = playerByToken(token)
+            ?: return@synchronized GenericOkResponse(ok = false, error = "Invalid session token.")
+        if (match.status != MatchStatus.ACTIVE) {
+            return@synchronized GenericOkResponse(ok = false, error = "Match is not active.")
+        }
+        if (slot.player != match.turnState.player) {
+            return@synchronized GenericOkResponse(ok = false, error = "It is not your turn.")
+        }
+        val tileId = match.turnState.tileId
+            ?: return@synchronized GenericOkResponse(ok = false, error = "No tile assigned.")
+        val nextIntent = TurnIntentState(
+            player = slot.player,
+            tileId = tileId,
+            x = x,
+            y = y,
+            rotDeg = normalizeRot(rotDeg),
+            meepleFeatureId = meepleFeatureId?.trim().orEmpty().ifBlank { null },
+            locked = locked,
+            updatedAtEpochMs = nowMs(),
+        )
+        match = match.copy(
+            turnState = match.turnState.copy(intent = nextIntent),
+            updatedAtEpochMs = nowMs(),
+        )
+        GenericOkResponse(ok = true)
+    }
+
+    fun clearTurnIntent(token: String): GenericOkResponse = synchronized(lock) {
+        cleanupInvitesLocked()
+        val slot = playerByToken(token)
+            ?: return@synchronized GenericOkResponse(ok = false, error = "Invalid session token.")
+        clearIntentForPlayerLocked(slot.player)
+        GenericOkResponse(ok = true)
     }
 
     fun submitTurn(
@@ -264,6 +323,7 @@ class HostGameManager(
         rotDeg: Int,
         meepleFeatureId: String?,
     ): SubmitTurnResponse = synchronized(lock) {
+        cleanupInvitesLocked()
         val slot = playerByToken(token)
             ?: return@synchronized SubmitTurnResponse(ok = false, error = "Invalid session token.")
         if (match.status != MatchStatus.ACTIVE) {
@@ -339,6 +399,7 @@ class HostGameManager(
             board = board,
             instSeq = instId + 1,
             meeplesAvailable = meeplesAvail,
+            turnState = match.turnState.copy(intent = null),
             updatedAtEpochMs = nowMs(),
         )
 
@@ -351,6 +412,7 @@ class HostGameManager(
                 tileId = null,
                 burnedTiles = emptyList(),
                 turnIndex = match.turnState.turnIndex + 1,
+                intent = null,
             ),
             lastEvent = "${slot.name} placed $tileId at ($x,$y) r$rot",
             updatedAtEpochMs = nowMs(),
@@ -362,10 +424,16 @@ class HostGameManager(
     }
 
     fun removeToken(token: String): GenericOkResponse = synchronized(lock) {
+        cleanupInvitesLocked()
         val slot = playerByToken(token)
             ?: return@synchronized GenericOkResponse(ok = false, error = "Invalid session token.")
+        if (slot.player == 2) {
+            resetToWaitingLocked("${slot.name} left the match.")
+            return@synchronized GenericOkResponse(ok = true)
+        }
         val players = match.players.toMutableMap()
         players[slot.player] = slot.copy(connected = false, lastSeenEpochMs = nowMs())
+        clearIntentForPlayerLocked(slot.player)
         match = match.copy(players = players, updatedAtEpochMs = nowMs())
         GenericOkResponse(ok = true)
     }
@@ -435,6 +503,8 @@ class HostGameManager(
     }
 
     private fun cleanupInvitesLocked() {
+        cleanupDisconnectedOpponentLocked()
+
         val now = nowMs()
         for (invite in invitesById.values) {
             if (invite.status == InviteStatus.PENDING && now - invite.createdAtEpochMs > INVITE_TTL_MS) {
@@ -452,6 +522,23 @@ class HostGameManager(
                 it.fromName.trim().lowercase() == accepted && it.status == InviteStatus.ACCEPTED
             }
         }
+    }
+
+    private fun cleanupDisconnectedOpponentLocked() {
+        val p2 = match.players[2] ?: return
+        val now = nowMs()
+        if (p2.connected) return
+        if (now - p2.lastSeenEpochMs < DISCONNECTED_PLAYER_RELEASE_MS) return
+        resetToWaitingLocked("${p2.name} disconnected. Waiting for opponent.")
+    }
+
+    private fun resetToWaitingLocked(event: String) {
+        match = createWaitingMatch(hostName, hostToken).copy(
+            lastEvent = event,
+            updatedAtEpochMs = nowMs(),
+        )
+        invitesById.clear()
+        acceptedInviteNames.clear()
     }
 
     private fun recomputeAndScore(reawardAll: Boolean = false) {
@@ -544,7 +631,7 @@ class HostGameManager(
         match = match.copy(
             status = MatchStatus.FINISHED,
             score = score,
-            turnState = match.turnState.copy(tileId = null, burnedTiles = emptyList()),
+            turnState = match.turnState.copy(tileId = null, burnedTiles = emptyList(), intent = null),
             nextTiles = mapOf(1 to null, 2 to null),
             lastEvent = event,
             updatedAtEpochMs = nowMs(),
@@ -582,7 +669,7 @@ class HostGameManager(
                 match = match.copy(
                     remaining = remaining,
                     nextTiles = nextTiles,
-                    turnState = match.turnState.copy(tileId = null, burnedTiles = burned),
+                    turnState = match.turnState.copy(tileId = null, burnedTiles = burned, intent = null),
                     updatedAtEpochMs = nowMs(),
                 )
                 finalizeMatch()
@@ -593,7 +680,7 @@ class HostGameManager(
                 match = match.copy(
                     remaining = remaining,
                     nextTiles = nextTiles,
-                    turnState = match.turnState.copy(tileId = tileId, burnedTiles = burned),
+                    turnState = match.turnState.copy(tileId = tileId, burnedTiles = burned, intent = null),
                     updatedAtEpochMs = nowMs(),
                 )
                 ensureNextTiles()
@@ -626,6 +713,15 @@ class HostGameManager(
         return match.players.values.firstOrNull { it.token == token }
     }
 
+    private fun clearIntentForPlayerLocked(player: Int) {
+        val intent = match.turnState.intent ?: return
+        if (intent.player != player) return
+        match = match.copy(
+            turnState = match.turnState.copy(intent = null),
+            updatedAtEpochMs = nowMs(),
+        )
+    }
+
     private fun normalizeRot(raw: Int): Int {
         val m = ((raw % 360) + 360) % 360
         return when (m) {
@@ -644,5 +740,6 @@ class HostGameManager(
     companion object {
         private const val INVITE_TTL_MS = 120_000L
         private const val INVITE_RETAIN_MS = 300_000L
+        private const val DISCONNECTED_PLAYER_RELEASE_MS = 90_000L
     }
 }

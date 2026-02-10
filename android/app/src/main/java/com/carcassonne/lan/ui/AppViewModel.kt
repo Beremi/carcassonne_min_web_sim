@@ -5,6 +5,8 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.carcassonne.lan.core.CarcassonneEngine
+import com.carcassonne.lan.data.AreaPayload
+import com.carcassonne.lan.data.AreasRepository
 import com.carcassonne.lan.data.AppSettings
 import com.carcassonne.lan.data.MatchMetadataStore
 import com.carcassonne.lan.data.SettingsRepository
@@ -79,14 +81,82 @@ data class TilePreviewState(
     val reason: String,
 )
 
+data class PublishedTurnIntentState(
+    val token: String,
+    val turnIndex: Int,
+    val tileId: String,
+    val x: Int,
+    val y: Int,
+    val rotDeg: Int,
+    val meepleFeatureId: String? = null,
+    val locked: Boolean = false,
+)
+
+data class NormPoint(
+    val x: Float,
+    val y: Float,
+)
+
+data class BoardMeepleState(
+    val cellKey: String,
+    val x: Float,
+    val y: Float,
+    val player: Int,
+    val isField: Boolean,
+)
+
+data class ScoreHighlightAreaState(
+    val cellKey: String,
+    val tone: String,
+    val polygons: List<List<NormPoint>>,
+    val fallbackPoint: NormPoint? = null,
+)
+
+data class ScoreGroupState(
+    val key: String,
+    val type: String,
+    val complete: Boolean,
+    val points: Int,
+    val p1Score: Int,
+    val p2Score: Int,
+    val tiles: Int,
+    val meeplesP1: Int,
+    val meeplesP2: Int,
+    val tone: String,
+    val highlights: List<ScoreHighlightAreaState>,
+)
+
+data class TileFeatureVisualState(
+    val id: String,
+    val type: String,
+    val ports: List<String>,
+    val x: Float,
+    val y: Float,
+    val pennants: Int,
+)
+
+data class TileVisualState(
+    val tileId: String,
+    val features: List<TileFeatureVisualState>,
+)
+
 data class AppUiState(
     val isBootstrapping: Boolean = true,
     val tab: AppTab = AppTab.LOBBY,
-    val settings: AppSettings = AppSettings(playerName = "", port = SettingsRepository.FALLBACK_PORT),
+    val settings: AppSettings = AppSettings(
+        playerName = "",
+        port = SettingsRepository.FALLBACK_PORT,
+        simplifiedView = false,
+    ),
     val localIpAddresses: List<String> = emptyList(),
     val hosts: List<HostCard> = emptyList(),
     val session: ClientSession? = null,
     val match: MatchState? = null,
+    val tileVisuals: Map<String, TileVisualState> = emptyMap(),
+    val boardMeeples: List<BoardMeepleState> = emptyList(),
+    val scoreGroups: List<ScoreGroupState> = emptyList(),
+    val selectedScoreGroupKey: String? = null,
+    val selectedScoreHighlights: List<ScoreHighlightAreaState> = emptyList(),
     val canAct: Boolean = false,
     val preview: TilePreviewState? = null,
     val lockedPlacement: LockedPlacementState? = null,
@@ -100,6 +170,7 @@ data class AppUiState(
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val settingsRepository = SettingsRepository(application)
     private val tilesetRepository = TilesetRepository(application)
+    private val areasRepository = AreasRepository(application)
     private val metadataStore = MatchMetadataStore(application)
     private val lanClient = LanClient()
     private val lanScanner = LanScanner()
@@ -110,9 +181,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var engine: CarcassonneEngine? = null
     private var hostManager: HostGameManager? = null
     private var hostServer: LanHostServer? = null
+    private var areaPayload: AreaPayload? = null
 
     private var pollJob: Job? = null
     private var scanJob: Job? = null
+    private var lastPublishedIntent: PublishedTurnIntentState? = null
 
     init {
         viewModelScope.launch {
@@ -139,6 +212,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(tab = tab) }
         if (tab == AppTab.SETTINGS) {
             refreshLocalNetworkInfo()
+        }
+    }
+
+    fun selectScoreGroup(groupKey: String?) {
+        _uiState.update { state ->
+            val nextKey = if (groupKey == state.selectedScoreGroupKey) null else groupKey
+            val highlights = state.scoreGroups.firstOrNull { it.key == nextKey }?.highlights.orEmpty()
+            state.copy(
+                selectedScoreGroupKey = nextKey,
+                selectedScoreHighlights = highlights,
+            )
         }
     }
 
@@ -233,15 +317,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val session = _uiState.value.session
             if (session != null) {
+                clearTurnIntentIfNeeded(session)
                 runCatching { lanClient.leave(session) }
             }
             pollJob?.cancel()
+            lastPublishedIntent = null
             _uiState.update {
                 it.copy(
                     session = null,
                     canAct = false,
                     preview = null,
                     lockedPlacement = null,
+                    selectedScoreGroupKey = null,
+                    selectedScoreHighlights = emptyList(),
                     statusMessage = "Disconnected from match session.",
                 )
             }
@@ -319,6 +407,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val e = engine ?: return
         val state = _uiState.value
         val match = state.match ?: return
+        val session = state.session ?: return
 
         if (state.lockedPlacement != null) {
             _uiState.update {
@@ -363,11 +452,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 },
             )
         }
+        publishTurnIntent(
+            session = session,
+            match = match,
+            x = x,
+            y = y,
+            rotDeg = rot,
+            meepleFeatureId = null,
+            locked = false,
+        )
     }
 
     fun onBoardLongPress(x: Int, y: Int) {
         val e = engine ?: return
         val state = _uiState.value
+        val session = state.session ?: return
+        val match = state.match ?: return
+        if (!state.canAct) return
         val preview = state.preview ?: return
         if (preview.x != x || preview.y != y) return
         if (!preview.legal) {
@@ -389,10 +490,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 statusMessage = "Tile locked. Tap marker for meeple, then Confirm or Revert.",
             )
         }
+        publishTurnIntent(
+            session = session,
+            match = match,
+            x = preview.x,
+            y = preview.y,
+            rotDeg = preview.rotDeg,
+            meepleFeatureId = null,
+            locked = true,
+        )
     }
 
     fun onMeepleOptionTap(featureId: String) {
-        val locked = _uiState.value.lockedPlacement ?: return
+        val state = _uiState.value
+        val session = state.session ?: return
+        val match = state.match ?: return
+        val locked = state.lockedPlacement ?: return
         val next = if (locked.selectedMeepleFeatureId == featureId) null else featureId
         _uiState.update {
             it.copy(
@@ -404,10 +517,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 },
             )
         }
+        publishTurnIntent(
+            session = session,
+            match = match,
+            x = locked.x,
+            y = locked.y,
+            rotDeg = locked.rotDeg,
+            meepleFeatureId = next,
+            locked = true,
+        )
     }
 
     fun revertLockedPlacement() {
         val state = _uiState.value
+        val session = state.session ?: return
+        val match = state.match ?: return
         val locked = state.lockedPlacement ?: return
         _uiState.update {
             it.copy(
@@ -423,6 +547,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 statusMessage = "Placement reverted. You can rotate or choose another cell.",
             )
         }
+        publishTurnIntent(
+            session = session,
+            match = match,
+            x = locked.x,
+            y = locked.y,
+            rotDeg = locked.rotDeg,
+            meepleFeatureId = null,
+            locked = false,
+        )
     }
 
     fun confirmLockedPlacement() {
@@ -448,13 +581,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
+            lastPublishedIntent = null
             persistClientSnapshot(session, res.match)
             val canAct = res.match.status.name == "ACTIVE" && res.match.turnState.player == session.player
+            val boardMeeples = buildBoardMeeples(res.match)
+            val scoreGroups = buildScoreGroups(res.match)
+            val selectedKey = _uiState.value.selectedScoreGroupKey
+                ?.takeIf { key -> scoreGroups.any { it.key == key } }
+            val selectedHighlights = scoreGroups.firstOrNull { it.key == selectedKey }?.highlights.orEmpty()
+            val preview = resolveTurnPreview(
+                match = res.match,
+                canAct = canAct,
+                currentPreview = null,
+                locked = null,
+            )
             _uiState.update {
                 it.copy(
                     match = res.match,
+                    boardMeeples = boardMeeples,
+                    scoreGroups = scoreGroups,
+                    selectedScoreGroupKey = selectedKey,
+                    selectedScoreHighlights = selectedHighlights,
                     canAct = canAct,
-                    preview = null,
+                    preview = preview,
                     lockedPlacement = null,
                     statusMessage = "Turn submitted.",
                 )
@@ -462,10 +611,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveSettings(playerName: String, portText: String) {
+    fun saveSettings(playerName: String, portText: String, simplifiedView: Boolean) {
         viewModelScope.launch {
             val parsedPort = portText.toIntOrNull() ?: SettingsRepository.FALLBACK_PORT
-            settingsRepository.save(playerName = playerName, port = parsedPort)
+            settingsRepository.save(
+                playerName = playerName,
+                port = parsedPort,
+                simplifiedView = simplifiedView,
+            )
             val fresh = settingsRepository.settings.first()
 
             hostManager?.configureHostPlayer(fresh.playerName)
@@ -494,6 +647,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         settingsRepository.initializeDefaultsIfNeeded()
         val settings = settingsRepository.settings.first()
         val tileset = tilesetRepository.loadTileset()
+        areaPayload = runCatching { areasRepository.loadAreas() }.getOrNull()
+        val tileVisuals = tileset.tiles.associate { tile ->
+            tile.id to TileVisualState(
+                tileId = tile.id,
+                features = tile.features.map { feature ->
+                    TileFeatureVisualState(
+                        id = feature.id,
+                        type = feature.type,
+                        ports = feature.ports,
+                        x = (feature.meeplePlacement.getOrNull(0)?.toFloat() ?: 0.5f).coerceIn(0f, 1f),
+                        y = (feature.meeplePlacement.getOrNull(1)?.toFloat() ?: 0.5f).coerceIn(0f, 1f),
+                        pennants = runCatching {
+                            feature.tags["pennants"]?.toString()?.filter { c -> c.isDigit() }?.toInt()
+                        }.getOrNull() ?: 0,
+                    )
+                },
+            )
+        }
         val localIps = runCatching {
             lanScanner.localIPv4Addresses().toList().sorted()
         }.getOrElse { emptyList() }
@@ -518,6 +689,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 isBootstrapping = false,
                 settings = settings,
                 localIpAddresses = localIps,
+                tileVisuals = tileVisuals,
                 statusMessage = "Hosting on 0.0.0.0:${settings.port}. Scanning LAN...",
             )
         }
@@ -588,28 +760,67 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val poll = runCatching { lanClient.poll(session) }.getOrNull()
                 if (poll != null && poll.ok && poll.match != null) {
                     val canAct = poll.canAct
+                    val currentState = _uiState.value
+                    val boardMeeples = buildBoardMeeples(poll.match)
+                    val scoreGroups = buildScoreGroups(poll.match)
+                    val selectedKey = currentState.selectedScoreGroupKey
+                        ?.takeIf { key -> scoreGroups.any { it.key == key } }
+                    val selectedHighlights = scoreGroups
+                        .firstOrNull { it.key == selectedKey }
+                        ?.highlights
+                        .orEmpty()
+                    val nextLocked = currentState.lockedPlacement?.takeIf {
+                        canAct &&
+                            it.tileId == poll.match.turnState.tileId &&
+                            poll.match.turnState.player == session.player
+                    }
+                    val nextPreview = resolveTurnPreview(
+                        match = poll.match,
+                        canAct = canAct,
+                        currentPreview = currentState.preview,
+                        locked = nextLocked,
+                    )
                     _uiState.update { current ->
                         current.copy(
                             match = poll.match,
+                            boardMeeples = boardMeeples,
+                            scoreGroups = scoreGroups,
+                            selectedScoreGroupKey = selectedKey,
+                            selectedScoreHighlights = selectedHighlights,
                             canAct = canAct,
-                            preview = if (canAct) current.preview else null,
-                            lockedPlacement = if (canAct) current.lockedPlacement else null,
+                            preview = nextPreview,
+                            lockedPlacement = nextLocked,
                             statusMessage = poll.match.lastEvent.ifBlank { current.statusMessage },
                         )
                     }
                     persistClientSnapshot(session, poll.match)
+                    maybePublishCurrentTurnIntent(_uiState.value)
                 } else {
                     val cached = metadataStore.loadClient(sessionKey(session))
                     if (cached != null) {
+                        val boardMeeples = buildBoardMeeples(cached)
+                        val scoreGroups = buildScoreGroups(cached)
+                        val selectedKey = _uiState.value.selectedScoreGroupKey
+                            ?.takeIf { key -> scoreGroups.any { it.key == key } }
+                        val selectedHighlights = scoreGroups
+                            .firstOrNull { it.key == selectedKey }
+                            ?.highlights
+                            .orEmpty()
                         _uiState.update {
                             it.copy(
                                 match = cached,
+                                boardMeeples = boardMeeples,
+                                scoreGroups = scoreGroups,
+                                selectedScoreGroupKey = selectedKey,
+                                selectedScoreHighlights = selectedHighlights,
                                 canAct = false,
+                                preview = null,
                                 lockedPlacement = null,
                                 statusMessage = "Connection unstable. Showing cached match metadata.",
                             )
                         }
                     }
+                    clearTurnIntentIfNeeded(session)
                 }
 
                 heartbeatCounter += 1
@@ -652,14 +863,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             player = join.player,
             playerName = settings.playerName,
         )
+        lastPublishedIntent = null
+
+        val canAct = join.match.turnState.player == join.player && join.match.status.name == "ACTIVE"
+        val boardMeeples = buildBoardMeeples(join.match)
+        val scoreGroups = buildScoreGroups(join.match)
+        val preview = resolveTurnPreview(
+            match = join.match,
+            canAct = canAct,
+            currentPreview = null,
+            locked = null,
+        )
 
         _uiState.update {
             it.copy(
                 session = session,
                 match = join.match,
-                canAct = join.match.turnState.player == join.player && join.match.status.name == "ACTIVE",
+                boardMeeples = boardMeeples,
+                scoreGroups = scoreGroups,
+                selectedScoreGroupKey = null,
+                selectedScoreHighlights = emptyList(),
+                canAct = canAct,
                 tab = AppTab.MATCH,
-                preview = null,
+                preview = preview,
                 lockedPlacement = null,
                 outgoingInvite = null,
                 statusMessage = "Connected to $address:$port as P${join.player}",
@@ -667,6 +893,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         persistClientSnapshot(session, join.match)
+        maybePublishCurrentTurnIntent(_uiState.value)
         startPolling(session)
     }
 
@@ -731,19 +958,303 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         tileId: String,
         rotDeg: Int,
     ): List<MeepleOptionState> {
-        return engine.rotateTile(tileId, rotDeg).features
+        return engine.baseFeatures(tileId)
             .filter { f -> f.type in listOf("road", "city", "field", "cloister") }
             .map { feature ->
-                val px = feature.meeplePlacement.getOrNull(0)?.toFloat() ?: 0.5f
-                val py = feature.meeplePlacement.getOrNull(1)?.toFloat() ?: 0.5f
+                val placement = engine.featurePlacementNormalized(
+                    tileId = tileId,
+                    featureLocalId = feature.id,
+                    rotDeg = rotDeg,
+                ) ?: Pair(0.5f, 0.5f)
                 MeepleOptionState(
                     featureId = feature.id,
-                    x = px.coerceIn(0.05f, 0.95f),
-                    y = py.coerceIn(0.05f, 0.95f),
+                    x = placement.first.coerceIn(0.05f, 0.95f),
+                    y = placement.second.coerceIn(0.05f, 0.95f),
                     type = feature.type,
                 )
             }
             .distinctBy { it.featureId }
+    }
+
+    private fun buildBoardMeeples(match: MatchState): List<BoardMeepleState> {
+        val e = engine ?: return emptyList()
+        return match.board.entries.flatMap { (cellKey, inst) ->
+            inst.meeples.mapNotNull { meeple ->
+                val point = e.featurePlacementNormalized(
+                    tileId = inst.tileId,
+                    featureLocalId = meeple.featureLocalId,
+                    rotDeg = inst.rotDeg,
+                ) ?: return@mapNotNull null
+                val type = e.featureType(inst.tileId, meeple.featureLocalId).orEmpty()
+                BoardMeepleState(
+                    cellKey = cellKey,
+                    x = point.first.coerceIn(0.0f, 1.0f),
+                    y = point.second.coerceIn(0.0f, 1.0f),
+                    player = meeple.player,
+                    isField = type == "field",
+                )
+            }
+        }
+    }
+
+    private fun buildScoreGroups(match: MatchState): List<ScoreGroupState> {
+        val e = engine ?: return emptyList()
+        val analysis = e.analyzeBoard(match.board)
+        val instToCell = match.board.entries.associate { it.value.instId to it.key }
+        val groups = mutableListOf<ScoreGroupState>()
+
+        for (group in analysis.groups.values) {
+            if (group.type !in listOf("city", "road", "cloister", "field")) continue
+            val m1 = group.meeplesByPlayer[1] ?: 0
+            val m2 = group.meeplesByPlayer[2] ?: 0
+            val tone = when {
+                m1 > m2 -> "p1"
+                m2 > m1 -> "p2"
+                m1 > 0 && m2 > 0 -> "tie"
+                else -> "neutral"
+            }
+            val points = when (group.type) {
+                "city" -> e.scoreFeature(group, group.complete)
+                "road" -> e.scoreFeature(group, completed = true)
+                "cloister" -> e.scoreFeature(group, completed = group.complete)
+                "field" -> e.scoreFeature(group, completed = false)
+                else -> 0
+            }
+            val mx = maxOf(m1, m2)
+            val p1Score = if (mx > 0 && m1 == mx) points else 0
+            val p2Score = if (mx > 0 && m2 == mx) points else 0
+            if (p1Score <= 0 && p2Score <= 0) continue
+
+            val highlights = group.nodes.mapNotNull { node ->
+                val instId = node.substringBefore(":").toIntOrNull() ?: return@mapNotNull null
+                val featureId = node.substringAfter(":", "")
+                if (featureId.isBlank()) return@mapNotNull null
+                val cellKey = instToCell[instId] ?: return@mapNotNull null
+                val inst = match.board[cellKey] ?: return@mapNotNull null
+
+                val point = e.featurePlacementNormalized(
+                    tileId = inst.tileId,
+                    featureLocalId = featureId,
+                    rotDeg = inst.rotDeg,
+                )
+
+                val polygons = featurePolygons(
+                    tileId = inst.tileId,
+                    featureId = featureId,
+                    rotDeg = inst.rotDeg,
+                )
+
+                ScoreHighlightAreaState(
+                    cellKey = cellKey,
+                    tone = tone,
+                    polygons = polygons,
+                    fallbackPoint = point?.let { NormPoint(it.first, it.second) },
+                )
+            }.distinctBy { "${it.cellKey}:${it.fallbackPoint?.x}:${it.fallbackPoint?.y}:${it.polygons.hashCode()}" }
+
+            groups += ScoreGroupState(
+                key = group.key,
+                type = group.type,
+                complete = group.complete,
+                points = points,
+                p1Score = p1Score,
+                p2Score = p2Score,
+                tiles = group.tiles.size,
+                meeplesP1 = m1,
+                meeplesP2 = m2,
+                tone = tone,
+                highlights = highlights,
+            )
+        }
+
+        return groups.sortedWith(
+            compareBy<ScoreGroupState> { typeRank(it.type) }
+                .thenByDescending { it.p1Score + it.p2Score }
+                .thenByDescending { it.complete }
+                .thenByDescending { it.points }
+                .thenBy { it.key },
+        )
+    }
+
+    private fun featurePolygons(
+        tileId: String,
+        featureId: String,
+        rotDeg: Int,
+    ): List<List<NormPoint>> {
+        val tile = areaPayload?.tiles?.get(tileId) ?: return emptyList()
+        val feature = tile.features[featureId] ?: return emptyList()
+        return feature.polygons.mapNotNull polygonMap@{ poly ->
+            if (poly.size < 3) return@polygonMap null
+            val rotated = poly.mapNotNull pointMap@{ pt ->
+                val x = pt.getOrNull(0)?.toFloat() ?: return@pointMap null
+                val y = pt.getOrNull(1)?.toFloat() ?: return@pointMap null
+                rotateNormPoint(x, y, rotDeg)
+            }
+            if (rotated.size < 3) null else rotated
+        }
+    }
+
+    private fun rotateNormPoint(x: Float, y: Float, rotDeg: Int): NormPoint {
+        val rot = ((rotDeg % 360) + 360) % 360
+        return when (rot) {
+            90 -> NormPoint(1f - y, x)
+            180 -> NormPoint(1f - x, 1f - y)
+            270 -> NormPoint(y, 1f - x)
+            else -> NormPoint(x, y)
+        }
+    }
+
+    private fun resolveTurnPreview(
+        match: MatchState,
+        canAct: Boolean,
+        currentPreview: TilePreviewState?,
+        locked: LockedPlacementState?,
+    ): TilePreviewState? {
+        val e = engine ?: return null
+        if (!canAct) return null
+        if (locked != null) return currentPreview
+
+        val tileId = match.turnState.tileId ?: return null
+        val current = currentPreview
+        if (current != null && current.tileId == tileId) {
+            val legal = e.canPlaceAt(match.board, tileId, current.rotDeg, current.x, current.y)
+            return current.copy(legal = legal.ok, reason = legal.reason)
+        }
+
+        return firstClosestPreview(e, match, tileId)
+    }
+
+    private fun firstClosestPreview(
+        engine: CarcassonneEngine,
+        match: MatchState,
+        tileId: String,
+    ): TilePreviewState? {
+        val candidates = engine.buildFrontier(match.board)
+            .sortedWith(
+                compareBy<Pair<Int, Int>> { kotlin.math.abs(it.first) + kotlin.math.abs(it.second) }
+                    .thenBy { kotlin.math.abs(it.second) }
+                    .thenBy { kotlin.math.abs(it.first) }
+                    .thenBy { it.second }
+                    .thenBy { it.first },
+            )
+
+        for ((x, y) in candidates) {
+            for (rot in listOf(0, 90, 180, 270)) {
+                val legal = engine.canPlaceAt(match.board, tileId, rot, x, y)
+                if (legal.ok) {
+                    return TilePreviewState(
+                        x = x,
+                        y = y,
+                        rotDeg = rot,
+                        tileId = tileId,
+                        legal = true,
+                        reason = legal.reason,
+                    )
+                }
+            }
+        }
+        return null
+    }
+
+    private fun maybePublishCurrentTurnIntent(state: AppUiState) {
+        val session = state.session ?: return
+        val match = state.match ?: return
+        if (!state.canAct || match.status.name != "ACTIVE" || match.turnState.player != session.player) {
+            clearTurnIntentIfNeeded(session)
+            return
+        }
+
+        val locked = state.lockedPlacement
+        if (locked != null) {
+            publishTurnIntent(
+                session = session,
+                match = match,
+                x = locked.x,
+                y = locked.y,
+                rotDeg = locked.rotDeg,
+                meepleFeatureId = locked.selectedMeepleFeatureId,
+                locked = true,
+            )
+            return
+        }
+
+        val preview = state.preview
+        if (preview != null) {
+            publishTurnIntent(
+                session = session,
+                match = match,
+                x = preview.x,
+                y = preview.y,
+                rotDeg = preview.rotDeg,
+                meepleFeatureId = null,
+                locked = false,
+            )
+            return
+        }
+
+        clearTurnIntentIfNeeded(session)
+    }
+
+    private fun publishTurnIntent(
+        session: ClientSession,
+        match: MatchState,
+        x: Int,
+        y: Int,
+        rotDeg: Int,
+        meepleFeatureId: String?,
+        locked: Boolean,
+    ) {
+        val tileId = match.turnState.tileId ?: return
+        if (match.status.name != "ACTIVE" || match.turnState.player != session.player) return
+        val normalizedRot = (((rotDeg % 360) + 360) % 360 / 90) * 90
+        val normalizedMeeple = meepleFeatureId?.trim().orEmpty().ifBlank { null }
+        val fingerprint = PublishedTurnIntentState(
+            token = session.token,
+            turnIndex = match.turnState.turnIndex,
+            tileId = tileId,
+            x = x,
+            y = y,
+            rotDeg = normalizedRot,
+            meepleFeatureId = normalizedMeeple,
+            locked = locked,
+        )
+        if (lastPublishedIntent == fingerprint) return
+        lastPublishedIntent = fingerprint
+
+        viewModelScope.launch {
+            val ok = runCatching {
+                lanClient.publishTurnIntent(
+                    session = session,
+                    x = x,
+                    y = y,
+                    rotDeg = normalizedRot,
+                    meepleFeatureId = normalizedMeeple,
+                    locked = locked,
+                )
+            }.getOrDefault(false)
+            if (!ok && lastPublishedIntent == fingerprint) {
+                lastPublishedIntent = null
+            }
+        }
+    }
+
+    private fun clearTurnIntentIfNeeded(session: ClientSession) {
+        val published = lastPublishedIntent ?: return
+        lastPublishedIntent = null
+        if (published.token != session.token) return
+        viewModelScope.launch {
+            runCatching { lanClient.clearTurnIntent(session) }
+        }
+    }
+
+    private fun typeRank(type: String): Int {
+        return when (type.lowercase()) {
+            "city" -> 0
+            "road" -> 1
+            "cloister" -> 2
+            "field" -> 3
+            else -> 99
+        }
     }
 
     private fun isLikelyIpv4(value: String): Boolean {
