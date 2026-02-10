@@ -2,7 +2,7 @@ package com.carcassonne.lan.ui
 
 import android.content.Context
 import android.graphics.BitmapFactory
-import android.graphics.Paint
+import android.graphics.Paint as AndroidPaint
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -33,6 +33,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
@@ -69,23 +70,18 @@ fun BoardView(
     selectedScoreHighlights: List<ScoreHighlightAreaState>,
     preview: TilePreviewState?,
     lockedPlacement: LockedPlacementState?,
+    inspectSelection: InspectSelectionState?,
     onTapCell: (Int, Int) -> Unit,
     onLongPressCell: (Int, Int) -> Unit,
     onTapMeepleOption: (String) -> Unit,
+    onTapInspectOption: (String) -> Unit,
+    onClearInspectSelection: () -> Unit,
     onConfirmPlacement: () -> Unit,
     onRevertPlacement: () -> Unit,
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
     val tileCache = remember(context) { TileBitmapCache(context) }
-    val tileLabelPaint = remember {
-        Paint().apply {
-            isAntiAlias = true
-            color = android.graphics.Color.parseColor("#1C1C1C")
-            textAlign = Paint.Align.CENTER
-            textSize = 28f
-        }
-    }
 
     var zoom by remember { mutableFloatStateOf(1f) }
     var pan by remember { mutableStateOf(Offset.Zero) }
@@ -95,7 +91,7 @@ fun BoardView(
         modifier = modifier
             .onSizeChanged { boardSize = it }
             .background(Color(0xFFECE6D8))
-            .pointerInput(zoom, pan, match.id, preview, lockedPlacement) {
+            .pointerInput(zoom, pan, match.id, preview, lockedPlacement, inspectSelection) {
                 detectTapGestures(
                     onTap = { pos ->
                         if (lockedPlacement != null) {
@@ -109,6 +105,22 @@ fun BoardView(
                             )
                             if (hit != null) {
                                 onTapMeepleOption(hit)
+                            }
+                            return@detectTapGestures
+                        }
+                        if (inspectSelection != null) {
+                            val hit = hitTestInspectOption(
+                                tap = pos,
+                                selection = inspectSelection,
+                                boardWidth = size.width.toFloat(),
+                                boardHeight = size.height.toFloat(),
+                                zoom = zoom,
+                                pan = pan,
+                            )
+                            if (hit != null) {
+                                onTapInspectOption(hit)
+                            } else {
+                                onClearInspectSelection()
                             }
                             return@detectTapGestures
                         }
@@ -185,22 +197,19 @@ fun BoardView(
                         )
                     }
                 }
-
-                if (simplifiedView) {
-                    tileLabelPaint.textSize = (cellPx * 0.22f).coerceAtLeast(12f)
-                    drawContext.canvas.nativeCanvas.drawText(
-                        inst.tileId,
-                        topLeft.x + cellPx / 2f,
-                        topLeft.y + cellPx / 2f + tileLabelPaint.textSize * 0.35f,
-                        tileLabelPaint,
-                    )
-                }
             }
 
             for (hl in selectedScoreHighlights) {
                 val (x, y) = parseCell(hl.cellKey)
                 val topLeft = cellTopLeft(x, y)
                 val tone = highlightToneColor(hl.tone)
+                val dashedStroke = Stroke(
+                    width = 2.2f,
+                    pathEffect = PathEffect.dashPathEffect(
+                        intervals = floatArrayOf(11f, 8f),
+                        phase = 0f,
+                    ),
+                )
 
                 for (poly in hl.polygons) {
                     if (poly.size < 3) continue
@@ -210,18 +219,74 @@ fun BoardView(
                         path.lineTo(topLeft.x + poly[i].x * cellPx, topLeft.y + poly[i].y * cellPx)
                     }
                     path.close()
-                    drawPath(path = path, color = tone.copy(alpha = 0.30f))
-                    drawPath(path = path, color = tone.copy(alpha = 0.92f), style = Stroke(width = 1.8f))
+                    if (hl.dashedOnly) {
+                        drawPath(
+                            path = path,
+                            color = Color(0xCC111111),
+                            style = dashedStroke,
+                        )
+                    } else {
+                        drawPath(path = path, color = tone.copy(alpha = 0.30f))
+                        drawPath(path = path, color = tone.copy(alpha = 0.92f), style = Stroke(width = 1.8f))
+                    }
                 }
 
-                if (hl.polygons.isEmpty() && hl.fallbackPoint != null) {
-                    drawCircle(
-                        color = tone.copy(alpha = 0.80f),
-                        radius = (cellPx * 0.08f).coerceAtLeast(7f),
-                        center = Offset(
+                val markerCenter = when {
+                    hl.fallbackPoint != null -> {
+                        Offset(
                             topLeft.x + hl.fallbackPoint.x * cellPx,
                             topLeft.y + hl.fallbackPoint.y * cellPx,
-                        ),
+                        )
+                    }
+                    hl.polygons.isNotEmpty() -> {
+                        val first = hl.polygons.first()
+                        val c = polygonCentroid(first)
+                        Offset(
+                            topLeft.x + c.x * cellPx,
+                            topLeft.y + c.y * cellPx,
+                        )
+                    }
+                    else -> null
+                }
+
+                if (hl.polygons.isEmpty() && markerCenter != null) {
+                    drawCircle(
+                        color = if (hl.dashedOnly) Color(0x1A000000) else tone.copy(alpha = 0.80f),
+                        radius = (cellPx * 0.08f).coerceAtLeast(7f),
+                        center = markerCenter,
+                    )
+                    drawCircle(
+                        color = Color(0xCC111111),
+                        radius = (cellPx * 0.08f).coerceAtLeast(7f),
+                        center = markerCenter,
+                        style = dashedStroke,
+                    )
+                }
+
+                if (!hl.label.isNullOrBlank() && markerCenter != null) {
+                    val bubbleR = (cellPx * 0.11f).coerceAtLeast(10f)
+                    drawCircle(
+                        color = Color(0xEFFFEDA7),
+                        radius = bubbleR,
+                        center = markerCenter,
+                    )
+                    drawCircle(
+                        color = Color(0xCC111111),
+                        radius = bubbleR,
+                        center = markerCenter,
+                        style = dashedStroke,
+                    )
+                    drawContext.canvas.nativeCanvas.drawText(
+                        hl.label,
+                        markerCenter.x,
+                        markerCenter.y + bubbleR * 0.38f,
+                        AndroidPaint().apply {
+                            color = android.graphics.Color.BLACK
+                            textAlign = AndroidPaint.Align.CENTER
+                            isFakeBoldText = true
+                            textSize = bubbleR * 1.05f
+                            isAntiAlias = true
+                        },
                     )
                 }
             }
@@ -234,7 +299,7 @@ fun BoardView(
                     y = topLeft.y + meeple.y * cellPx,
                 )
                 val baseR = (cellPx * 0.090f).coerceAtLeast(6f)
-                val radius = if (meeple.isField) baseR * 1.2f else baseR
+                val radius = if (meeple.isField) baseR * 1.5f else baseR
                 val color = if (meeple.player == 2) Color(0xFFD53E3E) else Color(0xFF2B6BE1)
                 drawCircle(color = color, radius = radius, center = centerPt)
                 drawCircle(
@@ -250,7 +315,7 @@ fun BoardView(
                 )
             }
 
-            if (remoteIntent != null && preview == null && lockedPlacement == null) {
+            if (remoteIntent != null && lockedPlacement == null) {
                 val topLeft = cellTopLeft(remoteIntent.x, remoteIntent.y)
                 val image = tileCache.get(remoteIntent.tileId)
                 val intentColor = playerColor(remoteIntent.player)
@@ -313,6 +378,12 @@ fun BoardView(
             if (preview != null && lockedPlacement == null) {
                 val topLeft = cellTopLeft(preview.x, preview.y)
                 val image = tileCache.get(preview.tileId)
+                val previewColor = if (preview.isUpcomingGhost) playerColor(viewerPlayer) else activeColor
+                val previewAlpha = when {
+                    preview.isUpcomingGhost -> 0.42f
+                    preview.legal -> 0.70f
+                    else -> 0.35f
+                }
                 withTransform({
                     translate(topLeft.x, topLeft.y)
                     rotate(preview.rotDeg.toFloat(), pivot = Offset(cellPx / 2f, cellPx / 2f))
@@ -324,22 +395,32 @@ fun BoardView(
                             srcSize = IntSize(image.width, image.height),
                             dstOffset = IntOffset(0, 0),
                             dstSize = IntSize(cellPx.roundToInt(), cellPx.roundToInt()),
-                            alpha = if (preview.legal) 0.70f else 0.35f,
+                            alpha = previewAlpha,
                         )
                     } else {
                         drawSimplifiedTile(
                             sizePx = cellPx,
                             tile = tileVisuals[preview.tileId],
-                            alpha = if (preview.legal) 0.72f else 0.35f,
+                            alpha = previewAlpha,
                         )
                     }
                 }
 
                 drawRect(
-                    color = activeColor,
+                    color = previewColor.copy(alpha = if (preview.isUpcomingGhost) 0.88f else 1f),
                     topLeft = topLeft,
                     size = Size(cellPx, cellPx),
-                    style = Stroke(width = 4f),
+                    style = if (preview.isUpcomingGhost) {
+                        Stroke(
+                            width = 3.4f,
+                            pathEffect = PathEffect.dashPathEffect(
+                                intervals = floatArrayOf(12f, 9f),
+                                phase = 0f,
+                            ),
+                        )
+                    } else {
+                        Stroke(width = 4f)
+                    },
                 )
 
                 if (!preview.legal) {
@@ -415,6 +496,42 @@ fun BoardView(
                     drawCircle(
                         color = Color(0xFF0D1A2B),
                         radius = markerR,
+                        center = pt,
+                        style = Stroke(width = 2.2f),
+                    )
+                }
+            }
+
+            if (inspectSelection != null && lockedPlacement == null) {
+                val (sx, sy) = parseCell(inspectSelection.cellKey)
+                val topLeft = cellTopLeft(sx, sy)
+                drawRect(
+                    color = Color(0xFFD9B64A).copy(alpha = 0.88f),
+                    topLeft = topLeft,
+                    size = Size(cellPx, cellPx),
+                    style = Stroke(width = 3f),
+                )
+
+                val markerR = (cellPx * 0.082f).coerceAtLeast(7f)
+                for (option in inspectSelection.options) {
+                    val pt = markerCenter(
+                        selection = inspectSelection,
+                        option = option,
+                        boardWidth = size.width,
+                        boardHeight = size.height,
+                        zoom = zoom,
+                        pan = pan,
+                    )
+                    val selected = inspectSelection.selectedFeatureId == option.featureId
+                    val base = highlightToneColor(option.tone)
+                    drawCircle(
+                        color = if (selected) Color(0xFFFFC107) else base.copy(alpha = 0.90f),
+                        radius = if (selected) markerR * 1.12f else markerR,
+                        center = pt,
+                    )
+                    drawCircle(
+                        color = Color(0xFF0D1A2B),
+                        radius = if (selected) markerR * 1.12f else markerR,
                         center = pt,
                         style = Stroke(width = 2.2f),
                     )
@@ -630,8 +747,9 @@ private fun DrawScope.drawSimplifiedTile(
     for (city in cities) {
         val pennants = city.pennants.coerceAtLeast(0)
         if (pennants <= 0) continue
-        val cx = city.x * sizePx
-        val cy = city.y * sizePx
+        val crestCenter = crestAnchorForCity(city, sizePx)
+        val cx = crestCenter.x
+        val cy = crestCenter.y
         if (pennants == 1) {
             drawShield(center = Offset(cx, cy), sizePx = sizePx * 0.058f, alpha = a)
         } else {
@@ -653,6 +771,24 @@ private fun DrawScope.drawSimplifiedTile(
         color = outlineColor,
         size = Size(sizePx, sizePx),
         style = Stroke(width = max(sizePx * 0.014f, 1.2f)),
+    )
+}
+
+private fun crestAnchorForCity(city: TileFeatureVisualState, sizePx: Float): Offset {
+    var dx = city.x - 0.5f
+    var dy = city.y - 0.5f
+    val len = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+    if (len < 0.06f) {
+        dx = 0f
+        dy = -1f
+    } else {
+        dx /= len
+        dy /= len
+    }
+    val push = 0.12f
+    return Offset(
+        x = (city.x + dx * push).coerceIn(0.12f, 0.88f) * sizePx,
+        y = (city.y + dy * push).coerceIn(0.12f, 0.88f) * sizePx,
     )
 }
 
@@ -1005,6 +1141,20 @@ private fun SimplePoint.toOffset(sizePx: Float): Offset {
     return Offset(x * sizePx / 100f, y * sizePx / 100f)
 }
 
+private fun polygonCentroid(poly: List<NormPoint>): NormPoint {
+    if (poly.isEmpty()) return NormPoint(0.5f, 0.5f)
+    var x = 0f
+    var y = 0f
+    for (pt in poly) {
+        x += pt.x
+        y += pt.y
+    }
+    return NormPoint(
+        x = (x / poly.size).coerceIn(0f, 1f),
+        y = (y / poly.size).coerceIn(0f, 1f),
+    )
+}
+
 private fun toCell(
     pos: Offset,
     width: Float,
@@ -1042,6 +1192,23 @@ private fun hitTestMeepleOption(
     return null
 }
 
+private fun hitTestInspectOption(
+    tap: Offset,
+    selection: InspectSelectionState,
+    boardWidth: Float,
+    boardHeight: Float,
+    zoom: Float,
+    pan: Offset,
+): String? {
+    val radius = (BASE_CELL_PX * zoom * 0.12f).coerceAtLeast(16f)
+    for (option in selection.options) {
+        val pt = markerCenter(selection, option, boardWidth, boardHeight, zoom, pan)
+        val d = hypot((tap.x - pt.x).toDouble(), (tap.y - pt.y).toDouble())
+        if (d <= radius) return option.featureId
+    }
+    return null
+}
+
 private fun markerCenter(
     placement: LockedPlacementState,
     option: MeepleOptionState,
@@ -1055,6 +1222,27 @@ private fun markerCenter(
     val centerY = boardHeight / 2f + pan.y
     val tileLeft = centerX + placement.x * cellPx - cellPx / 2f
     val tileTop = centerY + placement.y * cellPx - cellPx / 2f
+
+    return Offset(
+        x = tileLeft + option.x * cellPx,
+        y = tileTop + option.y * cellPx,
+    )
+}
+
+private fun markerCenter(
+    selection: InspectSelectionState,
+    option: InspectFeatureOptionState,
+    boardWidth: Float,
+    boardHeight: Float,
+    zoom: Float,
+    pan: Offset,
+): Offset {
+    val cellPx = BASE_CELL_PX * zoom
+    val centerX = boardWidth / 2f + pan.x
+    val centerY = boardHeight / 2f + pan.y
+    val (x, y) = parseCell(selection.cellKey)
+    val tileLeft = centerX + x * cellPx - cellPx / 2f
+    val tileTop = centerY + y * cellPx - cellPx / 2f
 
     return Offset(
         x = tileLeft + option.x * cellPx,
@@ -1081,6 +1269,7 @@ private fun highlightToneColor(tone: String): Color {
         "p1" -> Color(0xFF2B6BE1)
         "p2" -> Color(0xFFD53E3E)
         "tie" -> Color(0xFF9C6BDA)
+        "free" -> Color(0xFFEFD66A)
         else -> Color(0xFF4A8B50)
     }
 }

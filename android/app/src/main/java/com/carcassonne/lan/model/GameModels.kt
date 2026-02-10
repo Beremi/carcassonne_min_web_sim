@@ -64,12 +64,22 @@ data class MatchState(
     val remaining: Map<String, Int> = emptyMap(),
     val score: Map<Int, Int> = mapOf(1 to 0, 2 to 0),
     val scoredKeys: Set<String> = emptySet(),
+    val scoredAreaHistory: Map<String, AreaScoreHistoryEntry> = emptyMap(),
     val meeplesAvailable: Map<Int, Int> = mapOf(1 to 7, 2 to 7),
     val turnState: TurnState = TurnState(player = 1),
     val nextTiles: Map<Int, String?> = mapOf(1 to null, 2 to null),
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long,
     val lastEvent: String = "",
+)
+
+@Serializable
+data class AreaScoreHistoryEntry(
+    val key: String,
+    val type: String,
+    val p1: Int = 0,
+    val p2: Int = 0,
+    val closed: Boolean = true,
 )
 
 @Serializable

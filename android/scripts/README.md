@@ -15,6 +15,11 @@ This folder contains helper scripts to run two Android emulators and deploy the 
   - Sets forwarding on emulator A (`tcp:18473 -> 18473` by default).
   - Builds debug APK.
   - Installs and launches app on both emulators.
+- `build_install_phone.sh`
+  - Builds debug APK.
+  - Cleans previous app data (default on).
+  - Installs and launches app on a USB-connected physical phone.
+  - Default serial is `96c0a906` (can be overridden).
 
 ## One-time setup: create the two AVDs
 
@@ -61,6 +66,29 @@ cd /home/ber0061/Repositories/carcassonne_min_web_sim/android
 ```bash
 cd /home/ber0061/Repositories/carcassonne_min_web_sim/android
 ./scripts/build_install_dual_emulators.sh
+```
+
+## Physical phone install (USB)
+
+Default phone serial (`96c0a906`):
+
+```bash
+cd /home/ber0061/Repositories/carcassonne_min_web_sim/android
+./scripts/build_install_phone.sh
+```
+
+Specific serial:
+
+```bash
+cd /home/ber0061/Repositories/carcassonne_min_web_sim/android
+./scripts/build_install_phone.sh 4B201JEBF17591
+```
+
+Keep existing app data (skip clear/uninstall):
+
+```bash
+cd /home/ber0061/Repositories/carcassonne_min_web_sim/android
+CLEAN_INSTALL=0 ./scripts/build_install_phone.sh 96c0a906
 ```
 
 ## What to expect after script 3

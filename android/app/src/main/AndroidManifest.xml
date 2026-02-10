@@ -10,9 +10,11 @@
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@android:drawable/sym_def_app_icon"
         android:label="Carcassonne LAN"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:roundIcon="@android:drawable/sym_def_app_icon"
         android:supportsRtl="true"
-        android:theme="@style/Theme.CarcassonneLan">
+        android:theme="@style/Theme.CarcassonneLan"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

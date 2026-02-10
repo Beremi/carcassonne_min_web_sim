@@ -3,6 +3,7 @@ package com.carcassonne.lan.network
 import com.carcassonne.lan.core.CarcassonneEngine
 import com.carcassonne.lan.data.NameGenerator
 import com.carcassonne.lan.model.GenericOkResponse
+import com.carcassonne.lan.model.AreaScoreHistoryEntry
 import com.carcassonne.lan.model.InviteListItem
 import com.carcassonne.lan.model.InviteListResponse
 import com.carcassonne.lan.model.InviteSendResponse
@@ -545,6 +546,11 @@ class HostGameManager(
         val analysis = engine.analyzeBoard(match.board)
         var scoredKeys = if (reawardAll) mutableSetOf() else match.scoredKeys.toMutableSet()
         val score = if (reawardAll) mutableMapOf(1 to 0, 2 to 0) else match.score.toMutableMap()
+        val scoredAreaHistory = if (reawardAll) {
+            mutableMapOf<String, AreaScoreHistoryEntry>()
+        } else {
+            match.scoredAreaHistory.toMutableMap()
+        }
         val scoredNow = mutableSetOf<String>()
 
         for (g in analysis.groups.values) {
@@ -564,9 +570,20 @@ class HostGameManager(
             if (m2 == mx) winners += 2
 
             val pts = engine.scoreFeature(g, completed = true)
+            var p1Award = 0
+            var p2Award = 0
             for (winner in winners) {
                 score[winner] = (score[winner] ?: 0) + pts
+                if (winner == 1) p1Award += pts
+                if (winner == 2) p2Award += pts
             }
+            scoredAreaHistory[g.key] = AreaScoreHistoryEntry(
+                key = g.key,
+                type = g.type,
+                p1 = p1Award,
+                p2 = p2Award,
+                closed = true,
+            )
 
             scoredKeys += g.key
             scoredNow += g.key
@@ -600,7 +617,12 @@ class HostGameManager(
             match = match.copy(board = board, meeplesAvailable = meeplesAvail)
         }
 
-        match = match.copy(score = score, scoredKeys = scoredKeys, updatedAtEpochMs = nowMs())
+        match = match.copy(
+            score = score,
+            scoredKeys = scoredKeys,
+            scoredAreaHistory = scoredAreaHistory,
+            updatedAtEpochMs = nowMs(),
+        )
     }
 
     private fun finalizeMatch() {

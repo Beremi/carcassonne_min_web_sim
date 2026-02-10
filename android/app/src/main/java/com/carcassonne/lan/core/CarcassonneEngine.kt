@@ -187,8 +187,14 @@ class CarcassonneEngine(
             ?.features
             ?.firstOrNull { it.id == featureLocalId }
             ?: return null
-        val px = feature.meeplePlacement.getOrNull(0)?.toFloat() ?: 0.5f
-        val py = feature.meeplePlacement.getOrNull(1)?.toFloat() ?: 0.5f
+        var px = feature.meeplePlacement.getOrNull(0)?.toFloat() ?: 0.5f
+        var py = feature.meeplePlacement.getOrNull(1)?.toFloat() ?: 0.5f
+
+        // Base set cloister tiles A/B: move field marker upward for clearer placement.
+        if (feature.type == "field" && tileId in setOf("A", "B")) {
+            py = (py - 0.25f).coerceIn(0.05f, 0.95f)
+            px = px.coerceIn(0.05f, 0.95f)
+        }
         return rotateNormalized(px, py, rotDeg)
     }
 

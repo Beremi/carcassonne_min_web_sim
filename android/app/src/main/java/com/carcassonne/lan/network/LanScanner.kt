@@ -93,8 +93,10 @@ class LanScanner {
         val interfaces = runCatching { NetworkInterface.getNetworkInterfaces().toList() }
             .getOrDefault(emptyList())
         for (iface in interfaces) {
-            if (!iface.isUp || iface.isLoopback) continue
-            for (addr in iface.inetAddresses.toList()) {
+            val isLoopback = runCatching { iface.isLoopback }.getOrDefault(false)
+            if (isLoopback) continue
+            val addrs = runCatching { iface.inetAddresses.toList() }.getOrDefault(emptyList())
+            for (addr in addrs) {
                 if (addr is Inet4Address && !addr.isLoopbackAddress) {
                     out += addr.hostAddress ?: continue
                 }

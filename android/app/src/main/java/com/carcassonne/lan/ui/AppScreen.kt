@@ -2,6 +2,7 @@ package com.carcassonne.lan.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +25,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -61,27 +63,18 @@ fun CarcassonneAppRoot(vm: AppViewModel = viewModel()) {
 
     MaterialTheme(colorScheme = colorScheme) {
         Surface(modifier = Modifier.fillMaxSize()) {
-            if (state.isBootstrapping) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator()
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text("Preparing LAN game...")
-                    }
-                }
-            } else {
+            Box(modifier = Modifier.fillMaxSize()) {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background),
                 ) {
-                    TopTabs(
-                        selected = state.tab,
-                        onSelect = vm::selectTab,
-                    )
+                    if (state.tab != AppTab.MATCH) {
+                        TopTabs(
+                            selected = state.tab,
+                            onSelect = vm::selectTab,
+                        )
+                    }
 
                     when (state.tab) {
                         AppTab.LOBBY -> LobbyScreen(
@@ -95,11 +88,15 @@ fun CarcassonneAppRoot(vm: AppViewModel = viewModel()) {
 
                         AppTab.MATCH -> MatchScreen(
                             state = state,
+                            onSelectTab = vm::selectTab,
                             onTapCell = vm::onBoardTap,
                             onLongPressCell = vm::onBoardLongPress,
                             onTapMeepleOption = vm::onMeepleOptionTap,
+                            onTapInspectOption = vm::onInspectOptionTap,
+                            onClearInspectSelection = vm::clearInspectSelection,
                             onConfirmPlacement = vm::confirmLockedPlacement,
                             onRevertPlacement = vm::revertLockedPlacement,
+                            onSelectScoreGroup = vm::selectScoreGroup,
                             onDisconnect = vm::disconnectSession,
                         )
 
@@ -118,6 +115,24 @@ fun CarcassonneAppRoot(vm: AppViewModel = viewModel()) {
                             .fillMaxWidth()
                             .padding(horizontal = 14.dp, vertical = 10.dp),
                     )
+                }
+
+                if (state.isBootstrapping) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 6.dp),
+                        color = Color(0xD9FFF6D9),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Text("Preparing LAN game...")
+                        }
+                    }
                 }
             }
         }
@@ -282,11 +297,15 @@ private fun HostCardView(
 @Composable
 private fun MatchScreen(
     state: AppUiState,
+    onSelectTab: (AppTab) -> Unit,
     onTapCell: (Int, Int) -> Unit,
     onLongPressCell: (Int, Int) -> Unit,
     onTapMeepleOption: (String) -> Unit,
+    onTapInspectOption: (String) -> Unit,
+    onClearInspectSelection: () -> Unit,
     onConfirmPlacement: () -> Unit,
     onRevertPlacement: () -> Unit,
+    onSelectScoreGroup: (String?) -> Unit,
     onDisconnect: () -> Unit,
 ) {
     val match = state.match
@@ -323,9 +342,12 @@ private fun MatchScreen(
             selectedScoreHighlights = state.selectedScoreHighlights,
             preview = state.preview,
             lockedPlacement = state.lockedPlacement,
+            inspectSelection = state.inspectSelection,
             onTapCell = onTapCell,
             onLongPressCell = onLongPressCell,
             onTapMeepleOption = onTapMeepleOption,
+            onTapInspectOption = onTapInspectOption,
+            onClearInspectSelection = onClearInspectSelection,
             onConfirmPlacement = onConfirmPlacement,
             onRevertPlacement = onRevertPlacement,
         )
@@ -361,6 +383,21 @@ private fun MatchScreen(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            OutlinedButton(onClick = { onSelectTab(AppTab.LOBBY) }) {
+                                Text("Lobby")
+                            }
+                            OutlinedButton(onClick = { onSelectTab(AppTab.SETTINGS) }) {
+                                Text("Settings")
+                            }
+                            OutlinedButton(onClick = onDisconnect) {
+                                Text("Disconnect")
+                            }
+                        }
                         Text(
                             text = "${p1?.name ?: "P1"} ${match.score[1] ?: 0} - ${match.score[2] ?: 0} ${p2?.name ?: "Waiting"}",
                             style = MaterialTheme.typography.titleSmall,
@@ -382,18 +419,10 @@ private fun MatchScreen(
                             },
                             style = MaterialTheme.typography.bodySmall,
                         )
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            OutlinedButton(onClick = onDisconnect) {
-                                Text("Disconnect")
-                            }
-                            Text(
-                                text = "You: ${session.playerName} (P${session.player})",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
+                        Text(
+                            text = "You: ${session.playerName} (P${session.player})",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                 }
             }
@@ -422,7 +451,13 @@ private fun MatchScreen(
                     shadowElevation = 0.dp,
                     tonalElevation = 0.dp,
                 ) {
-                    ScorePanel(groups = state.scoreGroups)
+                    ScorePanel(
+                        groups = state.scoreGroups,
+                        currentScore = match.score,
+                        projectedFinalScore = state.projectedFinalScore,
+                        selectedKey = state.selectedScoreGroupKey,
+                        onSelect = onSelectScoreGroup,
+                    )
                 }
                 Spacer(modifier = Modifier.height(4.dp))
             }
@@ -440,9 +475,20 @@ private fun MatchScreen(
 @Composable
 private fun ScorePanel(
     groups: List<ScoreGroupState>,
+    currentScore: Map<Int, Int>,
+    projectedFinalScore: Map<Int, Int>,
+    selectedKey: String?,
+    onSelect: (String?) -> Unit,
 ) {
+    val openGroups = groups.filter { !it.closedScored }
+    val closedGroups = groups.filter { it.closedScored }
     Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-        Text("Scoring Areas", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "Score P1:${currentScore[1] ?: 0}|P2:${currentScore[2] ?: 0} / " +
+                "Projection P1:${projectedFinalScore[1] ?: 0}|P2:${projectedFinalScore[2] ?: 0}",
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.bodySmall,
+        )
         if (groups.isEmpty()) {
             Spacer(modifier = Modifier.height(4.dp))
             Text("No active scoring areas yet.", style = MaterialTheme.typography.bodySmall)
@@ -456,13 +502,54 @@ private fun ScorePanel(
                 .heightIn(min = 56.dp, max = 180.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            items(groups) { group ->
-                Text(
-                    text = "${group.type.uppercase()}: P1:${group.p1Score} | P2:${group.p2Score}",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Medium,
+            items(openGroups) { group ->
+                ScoreGroupRow(
+                    group = group,
+                    selected = selectedKey == group.key,
+                    onClick = { onSelect(group.key) },
                 )
             }
+            if (closedGroups.isNotEmpty()) {
+                item {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    HorizontalDivider(color = Color(0x66444444), thickness = 1.dp)
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "Closed",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+            items(closedGroups) { group ->
+                ScoreGroupRow(
+                    group = group,
+                    selected = selectedKey == group.key,
+                    onClick = { onSelect(group.key) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScoreGroupRow(
+    group: ScoreGroupState,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+        ) {
+            Text(
+                text = "${group.label} P1:${group.p1EndNowScore}|P2:${group.p2EndNowScore}",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            )
         }
     }
 }
