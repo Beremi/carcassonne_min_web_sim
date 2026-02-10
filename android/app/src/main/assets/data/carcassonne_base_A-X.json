@@ -1,0 +1,3051 @@
+{
+  "meta": {
+    "game": "Carcassonne",
+    "set": "Base game tile set A\u2013X (72 tiles, 24 unique types)",
+    "tile_id_scheme": "Letters A\u2013X (as in many rulebooks / tile lists)",
+    "edge_order": [
+      "N",
+      "E",
+      "S",
+      "W"
+    ],
+    "coordinate_system": {
+      "type": "normalized",
+      "origin": "top-left",
+      "range": [
+        0.0,
+        1.0
+      ]
+    },
+    "ports": {
+      "edge_centers": {
+        "N": [
+          0.5,
+          0.0
+        ],
+        "E": [
+          1.0,
+          0.5
+        ],
+        "S": [
+          0.5,
+          1.0
+        ],
+        "W": [
+          0.0,
+          0.5
+        ]
+      },
+      "field_edge_halves": {
+        "Nw": [
+          0.25,
+          0.0
+        ],
+        "Ne": [
+          0.75,
+          0.0
+        ],
+        "En": [
+          1.0,
+          0.25
+        ],
+        "Es": [
+          1.0,
+          0.75
+        ],
+        "Se": [
+          0.75,
+          1.0
+        ],
+        "Sw": [
+          0.25,
+          1.0
+        ],
+        "Ws": [
+          0.0,
+          0.75
+        ],
+        "Wn": [
+          0.0,
+          0.25
+        ]
+      },
+      "field_halves_naming": {
+        "N": [
+          "Nw",
+          "Ne"
+        ],
+        "E": [
+          "En",
+          "Es"
+        ],
+        "S": [
+          "Sw",
+          "Se"
+        ],
+        "W": [
+          "Wn",
+          "Ws"
+        ]
+      }
+    },
+    "notes": [
+      "Field connectivity is represented via 8 edge-half ports (Nw,Ne,En,Es,Se,Sw,Ws,Wn).",
+      "Meeple placement points are auto-derived from port geometry and pulled inward; they are intended as UI markers (not pixel-perfect).",
+      "Inns/Cathedrals tags are included for expansion-compatibility; they are false/zero for the base game."
+    ]
+  },
+  "tile_counts": {
+    "A": 2,
+    "B": 4,
+    "C": 1,
+    "D": 4,
+    "E": 5,
+    "F": 2,
+    "G": 1,
+    "H": 3,
+    "I": 2,
+    "J": 3,
+    "K": 3,
+    "L": 3,
+    "M": 2,
+    "N": 3,
+    "O": 2,
+    "P": 3,
+    "Q": 1,
+    "R": 3,
+    "S": 2,
+    "T": 1,
+    "U": 8,
+    "V": 9,
+    "W": 4,
+    "X": 1
+  },
+  "tiles": [
+    {
+      "id": "A",
+      "count": 2,
+      "is_start_tile_type": false,
+      "image": "images/tile_A.png",
+      "edges": {
+        "N": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "E": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "S": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "W": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "cloister1",
+          "type": "cloister",
+          "ports": [],
+          "tags": {},
+          "meeple_placement": [
+            0.5130370294368216,
+            0.47153127951763335
+          ]
+        },
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "S"
+          ],
+          "tags": {
+            "inn": false
+          },
+          "meeple_placement": [
+            0.4359599598023358,
+            0.80130259677347
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Nw",
+            "Ne",
+            "Wn",
+            "Ws",
+            "En",
+            "Es",
+            "Sw",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.49431163516230847,
+            0.4798856265218898
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": true,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "B",
+      "count": 4,
+      "is_start_tile_type": false,
+      "image": "images/tile_B.png",
+      "edges": {
+        "N": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "E": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "S": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "W": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "cloister1",
+          "type": "cloister",
+          "ports": [],
+          "tags": {},
+          "meeple_placement": [
+            0.48061885141736577,
+            0.46916472158292905
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Nw",
+            "Ne",
+            "Wn",
+            "Ws",
+            "En",
+            "Es",
+            "Sw",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.4989971155569557,
+            0.4986691170932249
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": true,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "C",
+      "count": 1,
+      "is_start_tile_type": false,
+      "image": "images/tile_C.png",
+      "edges": {
+        "N": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "E": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "S": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "W": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "N",
+            "W",
+            "E",
+            "S"
+          ],
+          "tags": {
+            "pennant": true,
+            "pennants": 1,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.5,
+            0.5
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 1,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "D",
+      "count": 4,
+      "is_start_tile_type": true,
+      "image": "images/tile_D.png",
+      "edges": {
+        "N": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "E": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "S": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "W": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "N",
+            "S"
+          ],
+          "tags": {
+            "inn": false
+          },
+          "meeple_placement": [
+            0.48942196681225786,
+            0.4871953896735937
+          ]
+        },
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "E"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.8461694948949039,
+            0.4736592747255739
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Nw",
+            "Wn",
+            "Ws",
+            "Sw"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.21363622220984768,
+            0.511654253253638
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "Ne",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.656922909004753,
+            0.5140693325429794
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "E",
+      "count": 5,
+      "is_start_tile_type": false,
+      "image": "images/tile_E.png",
+      "edges": {
+        "N": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "E": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "S": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "W": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "N"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.49471177577799114,
+            0.14703474355411286
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Wn",
+            "Ws",
+            "En",
+            "Es",
+            "Sw",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.4968469362616982,
+            0.6091317435848683
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "F",
+      "count": 2,
+      "is_start_tile_type": false,
+      "image": "images/tile_F.png",
+      "edges": {
+        "N": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field_custom_1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field_custom_1"
+            }
+          }
+        },
+        "E": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "S": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "W": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "W",
+            "E"
+          ],
+          "tags": {
+            "pennant": true,
+            "pennants": 1,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.4859135529860068,
+            0.46498760036249026
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Sw",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.5208774788131563,
+            0.881633661081106
+          ]
+        },
+        {
+          "id": "field_custom_1",
+          "type": "field",
+          "ports": [
+            "Nw",
+            "Ne"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.5377718977026612,
+            0.06849186170833559
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 1,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "G",
+      "count": 1,
+      "is_start_tile_type": false,
+      "image": "images/tile_G.png",
+      "edges": {
+        "N": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "E": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field2"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "S": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "W": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "N",
+            "S"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.5098262838877673,
+            0.49221661122150545
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Wn",
+            "Ws"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.10791437575165468,
+            0.5142796608044612
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "En",
+            "Es"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.9106337567806406,
+            0.5068949502969006
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "H",
+      "count": 3,
+      "is_start_tile_type": false,
+      "image": "images/tile_H.png",
+      "edges": {
+        "N": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "E": {
+          "primary": "city",
+          "feature": "city2",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city2"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city2"
+            }
+          }
+        },
+        "S": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "W": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "W"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.1421674642788471,
+            0.47173608401136613
+          ]
+        },
+        {
+          "id": "city2",
+          "type": "city",
+          "ports": [
+            "E"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.850349875033749,
+            0.47549340512958715
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Nw",
+            "Ne",
+            "Sw",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.4734122443856649,
+            0.5171227936749373
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "I",
+      "count": 2,
+      "is_start_tile_type": false,
+      "image": "images/tile_I.png",
+      "edges": {
+        "N": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "E": {
+          "primary": "city",
+          "feature": "city_custom_1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city_custom_1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city_custom_1"
+            }
+          }
+        },
+        "S": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "W": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "S"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.4980225151580002,
+            0.8411814381854626
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Nw",
+            "Ne",
+            "Wn",
+            "Ws"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.39042386284780617,
+            0.3676074200436681
+          ]
+        },
+        {
+          "id": "city_custom_1",
+          "type": "city",
+          "ports": [
+            "E"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.906379649829981,
+            0.45643439091378046
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "J",
+      "count": 3,
+      "is_start_tile_type": false,
+      "image": "images/tile_J.png",
+      "edges": {
+        "N": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "E": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "S": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "W": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "N"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.47532279533792055,
+            0.13950738359545758
+          ]
+        },
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "E",
+            "S"
+          ],
+          "tags": {
+            "inn": false
+          },
+          "meeple_placement": [
+            0.6447790556020749,
+            0.6593754724606335
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Wn",
+            "Ws",
+            "En",
+            "Sw"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.3772243425454171,
+            0.5192758941896969
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "Es",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.7743863750677545,
+            0.7834207520009169
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "K",
+      "count": 3,
+      "is_start_tile_type": false,
+      "image": "images/tile_K.png",
+      "edges": {
+        "N": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "E": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "S": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field2"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "W": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "E"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.8825230898452437,
+            0.47459235767531965
+          ]
+        },
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "N",
+            "W"
+          ],
+          "tags": {
+            "inn": false
+          },
+          "meeple_placement": [
+            0.33112653261333364,
+            0.36036861134423487
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Nw",
+            "Wn"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.1990079557538944,
+            0.2055027196654362
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "Ne",
+            "Ws",
+            "Sw",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.47634432825203354,
+            0.6312761452504341
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "L",
+      "count": 3,
+      "is_start_tile_type": false,
+      "image": "images/tile_L.png",
+      "edges": {
+        "N": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field3"
+            }
+          }
+        },
+        "E": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "S": {
+          "primary": "road",
+          "feature": "road_custom_2",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field2"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field3"
+            }
+          }
+        },
+        "W": {
+          "primary": "road",
+          "feature": "road_custom_1",
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "E"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.8420783480213373,
+            0.5079332739865007
+          ]
+        },
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "N"
+          ],
+          "tags": {
+            "inn": false
+          },
+          "meeple_placement": [
+            0.43402831850750734,
+            0.24725815617061103
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Nw",
+            "Wn"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.19765871524370754,
+            0.2034987517577949
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "Ws",
+            "Sw"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.17837918649994666,
+            0.7697009864152791
+          ]
+        },
+        {
+          "id": "field3",
+          "type": "field",
+          "ports": [
+            "Ne",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.6109040271719525,
+            0.5124052066929593
+          ]
+        },
+        {
+          "id": "road_custom_1",
+          "type": "road",
+          "ports": [
+            "W"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.1633447090084927,
+            0.4680592461371912
+          ]
+        },
+        {
+          "id": "road_custom_2",
+          "type": "road",
+          "ports": [
+            "S"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.40137156832723897,
+            0.7552562775986512
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "M",
+      "count": 2,
+      "is_start_tile_type": false,
+      "image": "images/tile_M.png",
+      "edges": {
+        "N": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "E": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "S": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "W": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "N",
+            "W"
+          ],
+          "tags": {
+            "pennant": true,
+            "pennants": 1,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.29255300943244433,
+            0.3265602665578543
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "En",
+            "Es",
+            "Sw",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.661711327395012,
+            0.6434526784105031
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 1,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "N",
+      "count": 3,
+      "is_start_tile_type": false,
+      "image": "images/tile_N.png",
+      "edges": {
+        "N": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "E": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "S": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "W": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "N",
+            "W"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.3084532937251955,
+            0.33115667012691186
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "En",
+            "Es",
+            "Sw",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.6604051717418601,
+            0.6379311125739494
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "O",
+      "count": 2,
+      "is_start_tile_type": false,
+      "image": "images/tile_O.png",
+      "edges": {
+        "N": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "E": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "S": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "W": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "N",
+            "W"
+          ],
+          "tags": {
+            "pennant": true,
+            "pennants": 1,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.28690041647492226,
+            0.32612282345602894
+          ]
+        },
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "E",
+            "S"
+          ],
+          "tags": {
+            "inn": false
+          },
+          "meeple_placement": [
+            0.6806802444489368,
+            0.6941393954652207
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "En",
+            "Sw"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.570959042890583,
+            0.5234219485314155
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "Es",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.8118017281273974,
+            0.8024972898955899
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 1,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "P",
+      "count": 3,
+      "is_start_tile_type": false,
+      "image": "images/tile_P.png",
+      "edges": {
+        "N": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "E": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "S": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "W": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "N",
+            "W"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.2890615758616226,
+            0.32362529137004414
+          ]
+        },
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "E",
+            "S"
+          ],
+          "tags": {
+            "inn": false
+          },
+          "meeple_placement": [
+            0.695138992574381,
+            0.6734760740177451
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "En",
+            "Sw"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.5656295441835574,
+            0.5305519318750196
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "Es",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.8117047644083415,
+            0.8003502283232528
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "Q",
+      "count": 1,
+      "is_start_tile_type": false,
+      "image": "images/tile_Q.png",
+      "edges": {
+        "N": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "E": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "S": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "W": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "N",
+            "W",
+            "E"
+          ],
+          "tags": {
+            "pennant": true,
+            "pennants": 1,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.49457293411785874,
+            0.3965594776517854
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Sw",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.5130723368414016,
+            0.8706093278478375
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 1,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "R",
+      "count": 3,
+      "is_start_tile_type": false,
+      "image": "images/tile_R.png",
+      "edges": {
+        "N": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "E": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "S": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "W": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "N",
+            "W",
+            "E"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.4903022468651758,
+            0.40286532265577524
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Sw",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.5316203070966,
+            0.8756323144690313
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "S",
+      "count": 2,
+      "is_start_tile_type": false,
+      "image": "images/tile_S.png",
+      "edges": {
+        "N": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "E": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "S": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "W": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "N",
+            "W",
+            "E"
+          ],
+          "tags": {
+            "pennant": true,
+            "pennants": 1,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.49568662487658816,
+            0.3989776136518329
+          ]
+        },
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "S"
+          ],
+          "tags": {
+            "ends_in_city": true,
+            "inn": false
+          },
+          "meeple_placement": [
+            0.4969962192527284,
+            0.8348508365094673
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Sw"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.28398068376232205,
+            0.8851642033839321
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.7007544162181122,
+            0.8721919862821967
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 1,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "T",
+      "count": 1,
+      "is_start_tile_type": false,
+      "image": "images/tile_T.png",
+      "edges": {
+        "N": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "left": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "right": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "E": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        },
+        "S": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "W": {
+          "primary": "city",
+          "feature": "city1",
+          "halves": {
+            "top": {
+              "type": "city",
+              "feature": "city1"
+            },
+            "bottom": {
+              "type": "city",
+              "feature": "city1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "city1",
+          "type": "city",
+          "ports": [
+            "N",
+            "W",
+            "E"
+          ],
+          "tags": {
+            "pennant": false,
+            "pennants": 0,
+            "cathedral": false
+          },
+          "meeple_placement": [
+            0.4890880056428641,
+            0.3955469811062985
+          ]
+        },
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "S"
+          ],
+          "tags": {
+            "ends_in_city": true,
+            "inn": false
+          },
+          "meeple_placement": [
+            0.5142089103939781,
+            0.8262181404021681
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Sw"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.287693289444085,
+            0.883668975902232
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.7249593626312104,
+            0.8738304297989284
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "U",
+      "count": 8,
+      "is_start_tile_type": false,
+      "image": "images/tile_U.png",
+      "edges": {
+        "N": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "E": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field2"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "S": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "W": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "N",
+            "S"
+          ],
+          "tags": {
+            "inn": false
+          },
+          "meeple_placement": [
+            0.5067687786702837,
+            0.5047814920044743
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Nw",
+            "Wn",
+            "Ws",
+            "Sw"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.22797482467056265,
+            0.5118778597358387
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "Ne",
+            "En",
+            "Es",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.7746981815006976,
+            0.4842855265471932
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "V",
+      "count": 9,
+      "is_start_tile_type": false,
+      "image": "images/tile_V.png",
+      "edges": {
+        "N": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field2"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "E": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field2"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "S": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "W": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field2"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "W",
+            "S"
+          ],
+          "tags": {
+            "inn": false
+          },
+          "meeple_placement": [
+            0.36994054438990864,
+            0.6273797003704091
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Ws",
+            "Sw"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.22702774601316952,
+            0.7618579753459008
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "Nw",
+            "Ne",
+            "Wn",
+            "En",
+            "Es",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.6026172329072362,
+            0.4024031066551994
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "W",
+      "count": 4,
+      "is_start_tile_type": false,
+      "image": "images/tile_W.png",
+      "edges": {
+        "N": {
+          "primary": "field",
+          "feature": null,
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field1"
+            }
+          }
+        },
+        "E": {
+          "primary": "road",
+          "feature": "road_custom_2",
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field3"
+            }
+          }
+        },
+        "S": {
+          "primary": "road",
+          "feature": "road_custom_1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field2"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field3"
+            }
+          }
+        },
+        "W": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "W"
+          ],
+          "tags": {
+            "inn": false
+          },
+          "meeple_placement": [
+            0.23602778384797596,
+            0.48576820010904315
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Nw",
+            "Ne",
+            "Wn",
+            "En"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.49085219556540516,
+            0.20286483285272647
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "Ws",
+            "Sw"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.22903515579482586,
+            0.755114937102849
+          ]
+        },
+        {
+          "id": "field3",
+          "type": "field",
+          "ports": [
+            "Es",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.7627962879902347,
+            0.7585237359558339
+          ]
+        },
+        {
+          "id": "road_custom_1",
+          "type": "road",
+          "ports": [
+            "S"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.5021831122062395,
+            0.7832119926174892
+          ]
+        },
+        {
+          "id": "road_custom_2",
+          "type": "road",
+          "ports": [
+            "E"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.8889808933389994,
+            0.46636389939071277
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    },
+    {
+      "id": "X",
+      "count": 1,
+      "is_start_tile_type": false,
+      "image": "images/tile_X.png",
+      "edges": {
+        "N": {
+          "primary": "road",
+          "feature": "road_custom_1",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field2"
+            }
+          }
+        },
+        "E": {
+          "primary": "road",
+          "feature": "road_custom_2",
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field2"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field3"
+            }
+          }
+        },
+        "S": {
+          "primary": "road",
+          "feature": "road_custom_3",
+          "halves": {
+            "left": {
+              "type": "field",
+              "feature": "field4"
+            },
+            "right": {
+              "type": "field",
+              "feature": "field3"
+            }
+          }
+        },
+        "W": {
+          "primary": "road",
+          "feature": "road1",
+          "halves": {
+            "top": {
+              "type": "field",
+              "feature": "field1"
+            },
+            "bottom": {
+              "type": "field",
+              "feature": "field4"
+            }
+          }
+        }
+      },
+      "features": [
+        {
+          "id": "road1",
+          "type": "road",
+          "ports": [
+            "W"
+          ],
+          "tags": {
+            "inn": false
+          },
+          "meeple_placement": [
+            0.1987315395641823,
+            0.4582080719611785
+          ]
+        },
+        {
+          "id": "field1",
+          "type": "field",
+          "ports": [
+            "Nw",
+            "Wn"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.2317499100094345,
+            0.20112817537546843
+          ]
+        },
+        {
+          "id": "field2",
+          "type": "field",
+          "ports": [
+            "Ne",
+            "En"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.7769333593850538,
+            0.2326468861916465
+          ]
+        },
+        {
+          "id": "field3",
+          "type": "field",
+          "ports": [
+            "Es",
+            "Se"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.7647717776522114,
+            0.7727735507364034
+          ]
+        },
+        {
+          "id": "field4",
+          "type": "field",
+          "ports": [
+            "Ws",
+            "Sw"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.22356370706709977,
+            0.7462382753525427
+          ]
+        },
+        {
+          "id": "road_custom_1",
+          "type": "road",
+          "ports": [
+            "N"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.5348291349827808,
+            0.1769530540283529
+          ]
+        },
+        {
+          "id": "road_custom_2",
+          "type": "road",
+          "ports": [
+            "E"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.7727543514277047,
+            0.535416572668387
+          ]
+        },
+        {
+          "id": "road_custom_3",
+          "type": "road",
+          "ports": [
+            "S"
+          ],
+          "tags": {},
+          "meeple_placement": [
+            0.48883963718919304,
+            0.7880686099687372
+          ]
+        }
+      ],
+      "tags": {
+        "cloister": false,
+        "pennants_total": 0,
+        "inns": 0,
+        "cathedrals": 0
+      }
+    }
+  ]
+}
