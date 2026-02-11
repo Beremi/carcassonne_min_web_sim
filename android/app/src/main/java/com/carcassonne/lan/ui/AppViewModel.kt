@@ -12,6 +12,7 @@ import com.carcassonne.lan.data.MatchMetadataStore
 import com.carcassonne.lan.data.SettingsRepository
 import com.carcassonne.lan.data.TilesetRepository
 import com.carcassonne.lan.model.ClientSession
+import com.carcassonne.lan.model.GameRules
 import com.carcassonne.lan.model.MatchState
 import com.carcassonne.lan.model.PingResponse
 import com.carcassonne.lan.network.HostGameManager
@@ -80,6 +81,7 @@ data class LockedPlacementState(
 data class IncomingInviteState(
     val inviteId: String,
     val fromName: String,
+    val rules: GameRules,
 )
 
 data class OutgoingInviteState(
@@ -87,6 +89,7 @@ data class OutgoingInviteState(
     val targetAddress: String,
     val targetPort: Int,
     val targetHostName: String,
+    val targetRules: GameRules,
 )
 
 data class TilePreviewState(
@@ -200,9 +203,11 @@ data class AppUiState(
         playerName = "",
         port = SettingsRepository.FALLBACK_PORT,
         simplifiedView = false,
+        previewPaneHeightPercent = 15,
     ),
     val localIpAddresses: List<String> = emptyList(),
     val hosts: List<HostCard> = emptyList(),
+    val lobbyRules: GameRules = GameRules(),
     val session: ClientSession? = null,
     val match: MatchState? = null,
     val tileVisuals: Map<String, TileVisualState> = emptyMap(),
@@ -306,7 +311,93 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshLobbyNow() {
         viewModelScope.launch {
+            val settings = _uiState.value.settings
+            hostManager?.configureHostPlayer(settings.playerName)
+            val reinitialized = hostManager?.refreshLobbyState() ?: false
+            val refreshedSnapshot = hostManager?.snapshot()
+            refreshedSnapshot?.let { metadataStore.saveHost(it) }
+
+            _uiState.update {
+                it.copy(
+                    lobbyRules = refreshedSnapshot?.rules ?: it.lobbyRules,
+                    outgoingInvite = null,
+                    statusMessage = if (reinitialized) {
+                        "Lobby reset. Ready for invites. Scanning LAN..."
+                    } else {
+                        "Refreshing LAN..."
+                    },
+                )
+            }
+
             refreshLocalIps()
+            refreshIncomingInvites()
+            refreshOutgoingInviteStatus()
+            scanOnce()
+        }
+    }
+
+    fun updateLobbyGameRules(
+        meeplesText: String,
+        smallCityTwoTilesFourPoints: Boolean,
+        randomizedMode: Boolean,
+        randomizedMoveLimitText: String,
+        previewEnabled: Boolean,
+        previewCountText: String,
+    ) {
+        viewModelScope.launch {
+            val current = _uiState.value.lobbyRules
+            val candidate = GameRules(
+                meeplesPerPlayer = meeplesText.toIntOrNull() ?: current.meeplesPerPlayer,
+                smallCityTwoTilesFourPoints = smallCityTwoTilesFourPoints,
+                randomizedMode = randomizedMode,
+                randomizedMoveLimit = randomizedMoveLimitText.toIntOrNull() ?: current.randomizedMoveLimit,
+                previewEnabled = previewEnabled,
+                previewCount = previewCountText.toIntOrNull() ?: current.previewCount,
+            )
+            val out = hostManager?.configureGameRules(candidate)
+            if (out == null || !out.ok) {
+                _uiState.update {
+                    it.copy(statusMessage = out?.error ?: "Failed to apply game settings.")
+                }
+                return@launch
+            }
+            val snap = hostManager?.snapshot()
+            snap?.let { metadataStore.saveHost(it) }
+            val appliedRules = snap?.rules ?: candidate
+            val currentOutgoing = _uiState.value.outgoingInvite
+            var updatedOutgoing = currentOutgoing
+            var statusMessage = "Game settings applied."
+
+            if (currentOutgoing != null) {
+                val resend = runCatching {
+                    lanClient.sendInvite(
+                        host = currentOutgoing.targetAddress,
+                        port = currentOutgoing.targetPort,
+                        fromName = _uiState.value.settings.playerName,
+                        rules = appliedRules,
+                    )
+                }.getOrNull()
+
+                if (resend != null && resend.ok && !resend.inviteId.isNullOrBlank()) {
+                    updatedOutgoing = currentOutgoing.copy(
+                        inviteId = resend.inviteId,
+                        targetRules = appliedRules,
+                    )
+                    statusMessage = "Game settings applied and pending invite updated."
+                } else {
+                    updatedOutgoing = currentOutgoing.copy(targetRules = appliedRules)
+                    statusMessage = resend?.error
+                        ?: "Game settings applied, but failed to refresh the pending invite remotely."
+                }
+            }
+
+            _uiState.update {
+                it.copy(
+                    lobbyRules = appliedRules,
+                    outgoingInvite = updatedOutgoing,
+                    statusMessage = statusMessage,
+                )
+            }
             refreshIncomingInvites()
             refreshOutgoingInviteStatus()
             scanOnce()
@@ -321,6 +412,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun connectToSelfHost() {
         connectToHost("127.0.0.1", _uiState.value.settings.port)
+    }
+
+    fun startSoloPlay() {
+        viewModelScope.launch {
+            val rulesOut = hostManager?.configureGameRules(_uiState.value.lobbyRules)
+            if (rulesOut == null || !rulesOut.ok) {
+                _uiState.update {
+                    it.copy(statusMessage = rulesOut?.error ?: "Failed to apply game settings for solo mode.")
+                }
+                return@launch
+            }
+            val out = hostManager?.startSoloGame()
+            if (out == null || !out.ok) {
+                _uiState.update {
+                    it.copy(statusMessage = out?.error ?: "Failed to start solo game.")
+                }
+                return@launch
+            }
+            val snapshot = hostManager?.snapshot()
+            snapshot?.let { metadataStore.saveHost(it) }
+            _uiState.update {
+                it.copy(
+                    lobbyRules = snapshot?.rules ?: it.lobbyRules,
+                    outgoingInvite = null,
+                    statusMessage = "Solo game started. Connecting...",
+                )
+            }
+            refreshIncomingInvites()
+            connectToHostInternal("127.0.0.1", _uiState.value.settings.port)
+        }
     }
 
     fun refreshLocalNetworkInfo() {
@@ -425,11 +546,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
+            val rulesForInvite = hostManager?.currentRules() ?: _uiState.value.lobbyRules
             val send = runCatching {
                 lanClient.sendInvite(
                     host = host.address,
                     port = host.port,
                     fromName = _uiState.value.settings.playerName,
+                    rules = rulesForInvite,
                 )
             }.getOrNull()
 
@@ -447,8 +570,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         targetAddress = host.address,
                         targetPort = host.port,
                         targetHostName = host.ping.hostName,
+                        targetRules = rulesForInvite,
                     ),
-                    statusMessage = "Invite sent to ${host.ping.hostName}. Waiting for response...",
+                    statusMessage = "Invite sent to ${host.ping.hostName} with selected game settings. Waiting for response...",
                 )
             }
         }
@@ -464,7 +588,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
             refreshIncomingInvites()
-            _uiState.update { it.copy(statusMessage = "Invite accepted. Opponent can now join.") }
+            _uiState.update { it.copy(statusMessage = "Invite accepted. Connecting...") }
+            connectToHostInternal("127.0.0.1", _uiState.value.settings.port)
         }
     }
 
@@ -719,6 +844,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update {
                 it.copy(
                     match = res.match,
+                    lobbyRules = res.match.rules,
                     boardMeeples = boardMeeples,
                     scoreGroups = scoreGroups,
                     projectedFinalScore = projectedFinalScore,
@@ -768,24 +894,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveSettings(playerName: String, portText: String, simplifiedView: Boolean) {
+    fun saveSettings(
+        playerName: String,
+        portText: String,
+        simplifiedView: Boolean,
+        previewPaneHeightText: String,
+    ) {
         viewModelScope.launch {
             val parsedPort = portText.toIntOrNull() ?: SettingsRepository.FALLBACK_PORT
+            val parsedPreviewPaneHeight = SettingsRepository.sanitizePreviewPaneHeight(previewPaneHeightText.toIntOrNull())
             settingsRepository.save(
                 playerName = playerName,
                 port = parsedPort,
                 simplifiedView = simplifiedView,
+                previewPaneHeightPercent = parsedPreviewPaneHeight,
             )
             val fresh = settingsRepository.settings.first()
 
             hostManager?.configureHostPlayer(fresh.playerName)
             hostServer?.start(fresh.port)
-            hostManager?.snapshot()?.let { metadataStore.saveHost(it) }
+            val snapshot = hostManager?.snapshot()
+            snapshot?.let { metadataStore.saveHost(it) }
             restartPresenceLoops()
 
             _uiState.update {
                 it.copy(
                     settings = fresh,
+                    lobbyRules = snapshot?.rules ?: it.lobbyRules,
                     statusMessage = "Settings saved. Hosting on port ${fresh.port}.",
                 )
             }
@@ -848,10 +983,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         server.start(settings.port)
         hostServer = server
 
-        manager.snapshot().let { metadataStore.saveHost(it) }
+        val hostSnapshot = manager.snapshot()
+        metadataStore.saveHost(hostSnapshot)
 
         _uiState.update {
             it.copy(
+                lobbyRules = hostSnapshot.rules,
                 statusMessage = "Hosting on 0.0.0.0:${settings.port}. Scanning LAN...",
             )
         }
@@ -1149,6 +1286,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     _uiState.update { current ->
                         current.copy(
                             match = poll.match,
+                            lobbyRules = poll.match.rules,
                             boardMeeples = boardMeeples,
                             scoreGroups = scoreGroups,
                             projectedFinalScore = projectedFinalScore,
@@ -1178,6 +1316,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         _uiState.update {
                             it.copy(
                                 match = cached,
+                                lobbyRules = cached.rules,
                                 boardMeeples = boardMeeples,
                                 scoreGroups = scoreGroups,
                                 projectedFinalScore = projectedFinalScore,
@@ -1252,6 +1391,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 session = session,
                 match = join.match,
+                lobbyRules = join.match.rules,
                 boardMeeples = boardMeeples,
                 scoreGroups = scoreGroups,
                 projectedFinalScore = projectedFinalScore,
@@ -1280,6 +1420,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     IncomingInviteState(
                         inviteId = item.id,
                         fromName = item.fromName,
+                        rules = item.rules ?: _uiState.value.lobbyRules,
                     )
                 }
             )
@@ -1466,7 +1607,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (winners.isEmpty() && !hasMeeples) continue
             val tone = toneFromMeeples(m1, m2)
 
-            val endNowValue = e.scoreEndNowValue(group)
+            val endNowValue = e.scoreEndNowValue(group, match.rules)
             if (endNowValue <= 0 && !(group.type == "field" && hasMeeples)) continue
             val p1CurrentScore = 0
             val p2CurrentScore = 0
@@ -1643,7 +1784,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (group.type != "field" && group.key in match.scoredKeys) continue
             val winners = e.winnersOfGroup(group)
             if (winners.isEmpty()) continue
-            val pts = e.scoreEndNowValue(group)
+            val pts = e.scoreEndNowValue(group, match.rules)
             if (pts <= 0) continue
             for (winner in winners) {
                 projected[winner] = (projected[winner] ?: 0) + pts
@@ -1702,26 +1843,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             ?.type
 
         if (_uiState.value.settings.simplifiedView) {
-            if (featureType == "field") {
-                val fromAreas = areaFeaturePolygons(
-                    tileId = tileId,
-                    featureId = featureId,
-                    rotDeg = rotDeg,
-                )
-                if (fromAreas.isNotEmpty()) return fromAreas
-            }
             val simplified = simplifiedFeaturePolygons(
                 tileId = tileId,
                 featureId = featureId,
                 rotDeg = rotDeg,
             )
             if (simplified.isNotEmpty()) return simplified
+            if (featureType == "field") {
+                return simplifiedFieldFallbackPolygons(
+                    tileId = tileId,
+                    featureId = featureId,
+                    rotDeg = rotDeg,
+                )
+            }
         }
         return areaFeaturePolygons(
             tileId = tileId,
             featureId = featureId,
             rotDeg = rotDeg,
         )
+    }
+
+    private fun simplifiedFieldFallbackPolygons(
+        tileId: String,
+        featureId: String,
+        rotDeg: Int,
+    ): List<List<NormPoint>> {
+        val field = _uiState.value.tileVisuals[tileId]
+            ?.features
+            ?.firstOrNull { it.id == featureId && it.type == "field" }
+            ?: return emptyList()
+        val local = circlePolygon(field.x, field.y, 0.14f, 16)
+        return listOf(local.map { p -> rotateNormPoint(p.x, p.y, rotDeg) })
     }
 
     private fun areaFeaturePolygons(
@@ -1759,7 +1912,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
             "road" -> simplifiedRoadPolygons(feature, allFeatures)
             "field" -> simplifiedFieldPolygons(tileId, feature, allFeatures)
-            "cloister" -> listOf(circlePolygon(feature.x, feature.y, 0.115f, 18))
+            "cloister" -> listOf(circlePolygon(feature.x, feature.y, 0.25f, 26))
             else -> emptyList()
         }
 
@@ -1869,6 +2022,62 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return polys
     }
 
+    private fun simplifiedRoadMaskPolygons(
+        road: TileFeatureVisualState,
+        allFeatures: List<TileFeatureVisualState>,
+    ): List<List<NormPoint>> {
+        val ports = edgePortsOfFeature(road)
+        if (ports.isEmpty()) return emptyList()
+        val roads = allFeatures.filter { it.type == "road" }
+        val onePortRoads = roads.filter { edgePortsOfFeature(it).size == 1 }
+        val multiPortRoads = roads.filter { edgePortsOfFeature(it).size > 1 }
+        val sharedJunction = if (multiPortRoads.isEmpty() && onePortRoads.size >= 3 && ports.size == 1) {
+            NormPoint(0.5f, 0.5f)
+        } else {
+            null
+        }
+
+        if (ports.size == 1) {
+            val anchor = EDGE_ANCHOR[ports[0]] ?: NormPoint(0.5f, 0f)
+            val target = sharedJunction ?: roadDeadEndTarget(road, allFeatures)
+            return buildRoadTube(
+                points = listOf(anchor, target),
+                width = 0.145f,
+                includeJointCaps = false,
+            )
+        }
+
+        if (ports.size == 2) {
+            val a = EDGE_ANCHOR[ports[0]] ?: NormPoint(0.5f, 0f)
+            val b = EDGE_ANCHOR[ports[1]] ?: NormPoint(0.5f, 1f)
+            val c1 = edgeInwardControl(ports[0], 0.24f)
+            val c2 = edgeInwardControl(ports[1], 0.24f)
+            val pathPoints = sampleCubicPath(a, c1, c2, b, 20)
+            return buildRoadTube(
+                points = pathPoints,
+                width = 0.125f,
+                includeJointCaps = false,
+            )
+        }
+
+        val anchors = ports.mapNotNull { EDGE_ANCHOR[it] }
+        if (anchors.isEmpty()) return emptyList()
+        val junction = NormPoint(
+            x = ((anchors.sumOf { it.x.toDouble() } + road.x) / (anchors.size + 1).toDouble()).toFloat(),
+            y = ((anchors.sumOf { it.y.toDouble() } + road.y) / (anchors.size + 1).toDouble()).toFloat(),
+        )
+        val polys = mutableListOf<List<NormPoint>>()
+        for (anchor in anchors) {
+            polys += buildRoadTube(
+                points = listOf(anchor, junction),
+                width = 0.125f,
+                includeJointCaps = false,
+            )
+        }
+        polys += squarePolygon(junction.x, junction.y, halfSize = 0.038f)
+        return polys
+    }
+
     private fun simplifiedFieldPolygons(
         tileId: String,
         field: TileFeatureVisualState,
@@ -1884,7 +2093,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         tileId: String,
         allFeatures: List<TileFeatureVisualState>,
     ): Map<String, List<List<NormPoint>>> {
-        val gridSize = 84
+        val gridSize = 120
         val blocked = BooleanArray(gridSize * gridSize)
         val fields = allFeatures.filter { it.type == "field" }
 
@@ -1897,7 +2106,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         for (feature in allFeatures) {
             when (feature.type) {
                 "city" -> mark(listOf(simplifiedCityPoints(feature.ports)))
-                "road" -> mark(simplifiedRoadPolygons(feature, allFeatures))
+                "road" -> mark(simplifiedRoadMaskPolygons(feature, allFeatures))
                 "cloister" -> mark(listOf(circlePolygon(feature.x, feature.y, 0.115f, 22)))
             }
         }
@@ -1954,11 +2163,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 out[field.id] = listOf(circlePolygon(field.x, field.y, 0.14f, 16))
                 continue
             }
-            val largest = loops.maxByOrNull { kotlin.math.abs(polygonSignedArea(it)) }
-            if (largest == null || largest.size < 3) {
+            val cleanedLoops = loops
+                .map { removeCollinear(it) }
+                .filter { loop -> loop.size >= 3 && kotlin.math.abs(polygonSignedArea(loop)) > 0.0003f }
+                .sortedByDescending { loop -> kotlin.math.abs(polygonSignedArea(loop)) }
+            if (cleanedLoops.isEmpty()) {
                 out[field.id] = listOf(circlePolygon(field.x, field.y, 0.14f, 16))
             } else {
-                out[field.id] = listOf(smoothClosedPolygon(largest, 2))
+                out[field.id] = cleanedLoops
             }
         }
         return out
@@ -2270,6 +2482,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 y = (cy + kotlin.math.sin(angle).toFloat() * radius).coerceIn(0f, 1f),
             )
         }
+    }
+
+    private fun squarePolygon(cx: Float, cy: Float, halfSize: Float): List<NormPoint> {
+        return listOf(
+            NormPoint((cx - halfSize).coerceIn(0f, 1f), (cy - halfSize).coerceIn(0f, 1f)),
+            NormPoint((cx + halfSize).coerceIn(0f, 1f), (cy - halfSize).coerceIn(0f, 1f)),
+            NormPoint((cx + halfSize).coerceIn(0f, 1f), (cy + halfSize).coerceIn(0f, 1f)),
+            NormPoint((cx - halfSize).coerceIn(0f, 1f), (cy + halfSize).coerceIn(0f, 1f)),
+        )
     }
 
     private fun cityOneEdgeFanPoints(edge: String, depth: Float = 0.30f, samples: Int = 16): List<NormPoint> {

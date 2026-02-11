@@ -4,6 +4,7 @@ import com.carcassonne.lan.core.CarcassonneEngine
 import com.carcassonne.lan.data.NameGenerator
 import com.carcassonne.lan.model.GenericOkResponse
 import com.carcassonne.lan.model.AreaScoreHistoryEntry
+import com.carcassonne.lan.model.GameRules
 import com.carcassonne.lan.model.InviteListItem
 import com.carcassonne.lan.model.InviteListResponse
 import com.carcassonne.lan.model.InviteSendResponse
@@ -20,6 +21,7 @@ import com.carcassonne.lan.model.PollResponse
 import com.carcassonne.lan.model.SubmitTurnResponse
 import com.carcassonne.lan.model.TurnIntentState
 import com.carcassonne.lan.model.TurnState
+import java.util.ArrayDeque
 import java.util.UUID
 import kotlin.random.Random
 
@@ -41,6 +43,7 @@ class HostGameManager(
         val fromName: String,
         val createdAtEpochMs: Long,
         var status: InviteStatus,
+        var rules: GameRules? = null,
     )
 
     private val lock = Any()
@@ -48,7 +51,9 @@ class HostGameManager(
     private var nextInviteId = 1
     private var hostName: String = NameGenerator.generate(random)
     private var hostToken: String = newToken()
+    private var lobbyRules: GameRules = normalizeRules(GameRules())
     private var match: MatchState = createWaitingMatch(hostName, hostToken)
+    private var soloMode: Boolean = false
     private val invitesById = linkedMapOf<String, InviteRecord>()
     private val acceptedInviteNames = linkedSetOf<String>()
 
@@ -84,13 +89,26 @@ class HostGameManager(
                 players[2] = restoredP2.copy(connected = false)
                 restored = restored.copy(players = players)
             }
+            lobbyRules = normalizeRules(restored.rules)
+            val normalizedMeeples = normalizedMeeplesByRules(restored.meeplesAvailable, lobbyRules.meeplesPerPlayer)
+            val normalizedDrawQueue = normalizeDrawQueue(
+                existing = restored.drawQueue,
+                rules = lobbyRules,
+                remaining = restored.remaining,
+            )
             match = restored
+                .copy(
+                    rules = lobbyRules,
+                    meeplesAvailable = normalizedMeeples,
+                    drawQueue = normalizedDrawQueue,
+                )
             nextMatchId = extractNextMatchId(saved.id)
             val p1 = saved.players[1]
             if (p1 != null) {
                 hostName = p1.name
                 hostToken = p1.token
             }
+            soloMode = restored.status == MatchStatus.ACTIVE && restored.players[2] == null
             cleanupDisconnectedOpponentLocked()
         }
     }
@@ -107,6 +125,7 @@ class HostGameManager(
             hostName = hostName,
             matchStatus = match.status,
             openSlots = open,
+            rules = match.rules,
             players = players,
         )
     }
@@ -133,6 +152,9 @@ class HostGameManager(
         }
 
         var p2 = match.players[2]
+        if (soloMode && p2 == null) {
+            return JoinResponse(ok = false, error = "Solo game is active.")
+        }
         if (p2 != null && match.status != MatchStatus.FINISHED && match.status != MatchStatus.ABORTED) {
             return JoinResponse(ok = false, error = "Match is full.")
         }
@@ -157,6 +179,7 @@ class HostGameManager(
         )
 
         match = match.copy(players = players, status = MatchStatus.ACTIVE, updatedAtEpochMs = nowMs())
+        soloMode = false
         consumeInviteForNameLocked(requested)
         ensureNextTiles()
         drawPlaceableTileForTurn()
@@ -167,9 +190,95 @@ class HostGameManager(
         JoinResponse(ok = true, token = joinToken, player = 2, match = match)
     }
 
-    fun sendInvite(fromNameRaw: String): InviteSendResponse = synchronized(lock) {
+    fun startSoloGame(): GenericOkResponse = synchronized(lock) {
+        cleanupInvitesLocked()
+
+        val p2 = match.players[2]
+        if (p2 != null && p2.connected && match.status == MatchStatus.ACTIVE) {
+            return GenericOkResponse(ok = false, error = "Opponent is connected. Disconnect first.")
+        }
+
+        val fresh = createWaitingMatch(hostName, hostToken)
+        val p1 = fresh.players[1]
+            ?: PlayerSlot(
+                player = 1,
+                name = hostName,
+                token = hostToken,
+                connected = true,
+                lastSeenEpochMs = nowMs(),
+            )
+        match = fresh.copy(
+            status = MatchStatus.ACTIVE,
+            players = mapOf(1 to p1),
+            turnState = fresh.turnState.copy(
+                player = 1,
+                tileId = null,
+                burnedTiles = emptyList(),
+                turnIndex = 1,
+                intent = null,
+            ),
+            nextTiles = mapOf(1 to null, 2 to null),
+            lastEvent = "Solo game started.",
+            updatedAtEpochMs = nowMs(),
+        )
+        soloMode = true
+        invitesById.clear()
+        acceptedInviteNames.clear()
+        ensureNextTiles()
+        drawPlaceableTileForTurn()
+        return GenericOkResponse(ok = true)
+    }
+
+    fun currentRules(): GameRules = synchronized(lock) {
+        match.rules
+    }
+
+    fun configureGameRules(input: GameRules): GenericOkResponse = synchronized(lock) {
+        cleanupInvitesLocked()
+        val normalized = normalizeRules(input)
+        val hasActiveOpponent = match.status == MatchStatus.ACTIVE && match.players[2]?.connected == true
+        if (hasActiveOpponent) {
+            return GenericOkResponse(ok = false, error = "Cannot change game settings during active multiplayer match.")
+        }
+
+        lobbyRules = normalized
+        resetToWaitingLocked("Game settings updated. Waiting for opponent.")
+        return GenericOkResponse(ok = true)
+    }
+
+    fun refreshLobbyState(): Boolean = synchronized(lock) {
+        cleanupInvitesLocked()
+        val now = nowMs()
+        val p2 = match.players[2]
+        val hasActiveTwoPlayerMatch = match.status == MatchStatus.ACTIVE &&
+            !soloMode &&
+            p2 != null &&
+            p2.connected
+
+        if (hasActiveTwoPlayerMatch) {
+            val players = match.players.toMutableMap()
+            val p1 = players[1]
+            if (p1 != null && !p1.connected) {
+                players[1] = p1.copy(
+                    connected = true,
+                    lastSeenEpochMs = now,
+                )
+                match = match.copy(
+                    players = players,
+                    updatedAtEpochMs = now,
+                )
+            }
+            return false
+        }
+
+        resetToWaitingLocked("Lobby refreshed. Waiting for opponent.")
+        return true
+    }
+
+    fun sendInvite(fromNameRaw: String, rules: GameRules? = null): InviteSendResponse = synchronized(lock) {
         cleanupInvitesLocked()
         val fromName = NameGenerator.ensureNumericSuffix(fromNameRaw, random)
+        val normalizedRules = rules?.let { normalizeRules(it) }
 
         if (!isJoinSlotAvailableLocked()) {
             return InviteSendResponse(ok = false, error = "Unavailable")
@@ -179,6 +288,7 @@ class HostGameManager(
             it.status == InviteStatus.PENDING && it.fromName.equals(fromName, ignoreCase = true)
         }
         if (existing != null) {
+            existing.rules = normalizedRules
             return InviteSendResponse(ok = true, inviteId = existing.id)
         }
 
@@ -188,6 +298,7 @@ class HostGameManager(
             fromName = fromName,
             createdAtEpochMs = nowMs(),
             status = InviteStatus.PENDING,
+            rules = normalizedRules,
         )
         return InviteSendResponse(ok = true, inviteId = id)
     }
@@ -214,6 +325,7 @@ class HostGameManager(
                     fromName = it.fromName,
                     createdAtEpochMs = it.createdAtEpochMs,
                     status = it.status.name.lowercase(),
+                    rules = it.rules,
                 )
             }
         InviteListResponse(ok = true, invites = out)
@@ -236,6 +348,16 @@ class HostGameManager(
             "accept" -> {
                 if (!isJoinSlotAvailableLocked()) {
                     return@synchronized InviteStatusResponse(ok = false, error = "Unavailable")
+                }
+                val inviteRules = invite.rules?.let { normalizeRules(it) }
+                if (inviteRules != null) {
+                    lobbyRules = inviteRules
+                    if (match.status != MatchStatus.ACTIVE || match.players[2]?.connected != true) {
+                        match = createWaitingMatch(hostName, hostToken).copy(
+                            lastEvent = "Invite accepted with custom rules.",
+                            updatedAtEpochMs = nowMs(),
+                        )
+                    }
                 }
                 invite.status = InviteStatus.ACCEPTED
                 acceptedInviteNames += invite.fromName.trim().lowercase()
@@ -405,8 +527,18 @@ class HostGameManager(
         )
 
         recomputeAndScore()
+        val completedMoves = match.turnState.turnIndex
+        if (match.rules.randomizedMode && completedMoves >= match.rules.randomizedMoveLimit) {
+            finalizeMatch()
+            return SubmitTurnResponse(ok = true, match = match)
+        }
 
-        val nextPlayer = if (slot.player == 1) 2 else 1
+        val activePlayers = activePlayersLocked()
+        val nextPlayer = if (activePlayers.size <= 1) {
+            1
+        } else {
+            if (slot.player == 1) 2 else 1
+        }
         match = match.copy(
             turnState = match.turnState.copy(
                 player = nextPlayer,
@@ -442,9 +574,15 @@ class HostGameManager(
     private fun createWaitingMatch(hostDisplayName: String, token: String): MatchState {
         val now = nowMs()
         val startTile = engine.startTileId ?: error("Tileset has no start tile.")
+        val rules = lobbyRules
 
         val remaining = engine.counts.toMutableMap()
         remaining[startTile] = ((remaining[startTile] ?: 1) - 1).coerceAtLeast(0)
+        val drawQueue = normalizeDrawQueue(
+            existing = emptyList(),
+            rules = rules,
+            remaining = remaining,
+        )
 
         val board = mapOf(
             "0,0" to PlacedTile(
@@ -472,9 +610,11 @@ class HostGameManager(
             remaining = remaining,
             score = mapOf(1 to 0, 2 to 0),
             scoredKeys = emptySet(),
-            meeplesAvailable = mapOf(1 to 7, 2 to 7),
+            meeplesAvailable = mapOf(1 to rules.meeplesPerPlayer, 2 to rules.meeplesPerPlayer),
+            rules = rules,
             turnState = TurnState(player = listOf(1, 2).random(random), tileId = null, turnIndex = 1),
             nextTiles = mapOf(1 to null, 2 to null),
+            drawQueue = drawQueue,
             createdAtEpochMs = now,
             updatedAtEpochMs = now,
             lastEvent = "Waiting for opponent.",
@@ -482,6 +622,7 @@ class HostGameManager(
     }
 
     private fun isJoinSlotAvailableLocked(): Boolean {
+        if (soloMode) return false
         val p2 = match.players[2]
         if (p2 == null) return true
         return match.status == MatchStatus.FINISHED || match.status == MatchStatus.ABORTED
@@ -538,6 +679,7 @@ class HostGameManager(
             lastEvent = event,
             updatedAtEpochMs = nowMs(),
         )
+        soloMode = false
         invitesById.clear()
         acceptedInviteNames.clear()
     }
@@ -569,7 +711,7 @@ class HostGameManager(
             if (m1 == mx) winners += 1
             if (m2 == mx) winners += 2
 
-            val pts = engine.scoreFeature(g, completed = true)
+            val pts = engine.scoreFeature(g, completed = true, rules = match.rules)
             var p1Award = 0
             var p2Award = 0
             for (winner in winners) {
@@ -609,7 +751,8 @@ class HostGameManager(
                     }
                     val player = meeple.player
                     if (player == 1 || player == 2) {
-                        meeplesAvail[player] = ((meeplesAvail[player] ?: 0) + 1).coerceAtMost(7)
+                        meeplesAvail[player] = ((meeplesAvail[player] ?: 0) + 1)
+                            .coerceAtMost(match.rules.meeplesPerPlayer)
                     }
                 }
                 board[cellKey] = inst.copy(meeples = kept)
@@ -635,7 +778,7 @@ class HostGameManager(
             val winners = engine.winnersOfGroup(g)
             if (winners.isEmpty()) continue
             if (g.type != "field" && g.complete && g.key in match.scoredKeys) continue
-            val pts = engine.scoreEndNowValue(g)
+            val pts = engine.scoreEndNowValue(g, match.rules)
             if (pts <= 0) continue
             for (p in winners) {
                 score[p] = (score[p] ?: 0) + pts
@@ -664,16 +807,33 @@ class HostGameManager(
         if (match.status != MatchStatus.ACTIVE) return
         val nextTiles = match.nextTiles.toMutableMap()
         val remaining = match.remaining.toMutableMap()
+        val drawQueue = ArrayDeque(
+            normalizeDrawQueue(
+                existing = match.drawQueue,
+                rules = match.rules,
+                remaining = remaining,
+            )
+        )
         val turnPlayer = match.turnState.player
-        for (player in listOf(1, 2)) {
+        val randomizedMode = match.rules.randomizedMode
+        for (player in activePlayersLocked()) {
             if (player == turnPlayer) continue
             if (nextTiles[player] != null) continue
-            val tile = drawReservedTile(remaining)
+            val tile = drawTileFromQueue(
+                randomizedMode = randomizedMode,
+                remaining = remaining,
+                drawQueue = drawQueue,
+            )
             if (tile != null) {
                 nextTiles[player] = tile
             }
         }
-        match = match.copy(nextTiles = nextTiles, remaining = remaining, updatedAtEpochMs = nowMs())
+        match = match.copy(
+            nextTiles = nextTiles,
+            remaining = remaining,
+            drawQueue = drawQueue.toList(),
+            updatedAtEpochMs = nowMs(),
+        )
     }
 
     private fun drawPlaceableTileForTurn() {
@@ -681,16 +841,56 @@ class HostGameManager(
         val turnPlayer = match.turnState.player
         val nextTiles = match.nextTiles.toMutableMap()
         val remaining = match.remaining.toMutableMap()
+        val drawQueue = ArrayDeque(
+            normalizeDrawQueue(
+                existing = match.drawQueue,
+                rules = match.rules,
+                remaining = remaining,
+            )
+        )
+        val randomized = match.rules.randomizedMode
+
+        if (randomized && !hasAnyPlaceableTileInBasePool(match.board)) {
+            match = match.copy(
+                remaining = remaining,
+                nextTiles = nextTiles,
+                drawQueue = drawQueue.toList(),
+                turnState = match.turnState.copy(tileId = null, burnedTiles = burned, intent = null),
+                updatedAtEpochMs = nowMs(),
+            )
+            finalizeMatch()
+            return
+        }
+
+        var attempts = 0
 
         while (true) {
             val tileId = nextTiles[turnPlayer].also {
                 if (it != null) nextTiles[turnPlayer] = null
-            } ?: drawReservedTile(remaining)
+            } ?: drawTileFromQueue(
+                randomizedMode = randomized,
+                remaining = remaining,
+                drawQueue = drawQueue,
+            )
+
+            attempts += 1
+            if (randomized && attempts > MAX_RANDOM_DRAW_ATTEMPTS) {
+                match = match.copy(
+                    remaining = remaining,
+                    nextTiles = nextTiles,
+                    drawQueue = drawQueue.toList(),
+                    turnState = match.turnState.copy(tileId = null, burnedTiles = burned, intent = null),
+                    updatedAtEpochMs = nowMs(),
+                )
+                finalizeMatch()
+                return
+            }
 
             if (tileId == null) {
                 match = match.copy(
                     remaining = remaining,
                     nextTiles = nextTiles,
+                    drawQueue = drawQueue.toList(),
                     turnState = match.turnState.copy(tileId = null, burnedTiles = burned, intent = null),
                     updatedAtEpochMs = nowMs(),
                 )
@@ -702,6 +902,7 @@ class HostGameManager(
                 match = match.copy(
                     remaining = remaining,
                     nextTiles = nextTiles,
+                    drawQueue = drawQueue.toList(),
                     turnState = match.turnState.copy(tileId = tileId, burnedTiles = burned, intent = null),
                     updatedAtEpochMs = nowMs(),
                 )
@@ -713,22 +914,114 @@ class HostGameManager(
         }
     }
 
-    private fun drawReservedTile(remaining: MutableMap<String, Int>): String? {
-        val total = remaining.values.sumOf { it.coerceAtLeast(0) }
+    private fun drawTileFromQueue(
+        randomizedMode: Boolean,
+        remaining: MutableMap<String, Int>,
+        drawQueue: ArrayDeque<String>,
+    ): String? {
+        if (randomizedMode) {
+            refillRandomizedDrawQueue(drawQueue, RANDOM_QUEUE_REFILL_MIN)
+            val tile = drawQueue.pollFirst() ?: return null
+            refillRandomizedDrawQueue(drawQueue, RANDOM_QUEUE_REFILL_MIN)
+            return tile
+        }
+
+        if (drawQueue.isEmpty()) {
+            drawQueue.addAll(buildShuffledQueueFromRemaining(remaining))
+        }
+
+        while (drawQueue.isNotEmpty()) {
+            val tileId = drawQueue.removeFirst()
+            val count = (remaining[tileId] ?: 0).coerceAtLeast(0)
+            if (count <= 0) continue
+            remaining[tileId] = (count - 1).coerceAtLeast(0)
+            return tileId
+        }
+        return null
+    }
+
+    private fun normalizeDrawQueue(
+        existing: List<String>,
+        rules: GameRules,
+        remaining: Map<String, Int>,
+    ): List<String> {
+        if (rules.randomizedMode) {
+            val queue = ArrayDeque(existing.filter { it.isNotBlank() })
+            refillRandomizedDrawQueue(queue, RANDOM_QUEUE_TARGET)
+            return queue.toList()
+        }
+
+        val totalRemaining = remaining.values.sumOf { it.coerceAtLeast(0) }
+        if (totalRemaining <= 0) return emptyList()
+        if (existing.isNotEmpty()) return existing
+        return buildShuffledQueueFromRemaining(remaining)
+    }
+
+    private fun buildShuffledQueueFromRemaining(remaining: Map<String, Int>): List<String> {
+        val deck = mutableListOf<String>()
+        for ((tileId, rawCount) in remaining.toSortedMap()) {
+            val count = rawCount.coerceAtLeast(0)
+            repeat(count) { deck += tileId }
+        }
+        deck.shuffle(random)
+        return deck
+    }
+
+    private fun refillRandomizedDrawQueue(queue: ArrayDeque<String>, targetSize: Int) {
+        while (queue.size < targetSize) {
+            val tileId = drawWeightedTileFromBasePool() ?: break
+            queue.addLast(tileId)
+        }
+    }
+
+    private fun drawWeightedTileFromBasePool(): String? {
+        val total = engine.counts.values.sumOf { it.coerceAtLeast(0) }
         if (total <= 0) return null
 
         val r = random.nextInt(1, total + 1)
         var acc = 0
-        for ((tileId, rawCount) in remaining.toSortedMap()) {
+        for ((tileId, rawCount) in engine.counts.toSortedMap()) {
             val cnt = rawCount.coerceAtLeast(0)
             if (cnt <= 0) continue
             acc += cnt
             if (r <= acc) {
-                remaining[tileId] = (cnt - 1).coerceAtLeast(0)
                 return tileId
             }
         }
         return null
+    }
+
+    private fun hasAnyPlaceableTileInBasePool(board: Map<String, PlacedTile>): Boolean {
+        return engine.counts.entries
+            .filter { it.value > 0 }
+            .any { (tileId, _) -> engine.hasAnyPlacement(board, tileId) }
+    }
+
+    private fun normalizeRules(input: GameRules): GameRules {
+        val meeples = input.meeplesPerPlayer.coerceIn(1, 20)
+        val limit = input.randomizedMoveLimit.coerceIn(1, 500)
+        val previewCount = input.previewCount.coerceIn(1, 20)
+        return input.copy(
+            meeplesPerPlayer = meeples,
+            randomizedMoveLimit = limit,
+            previewCount = previewCount,
+        )
+    }
+
+    private fun normalizedMeeplesByRules(
+        original: Map<Int, Int>,
+        maxMeeples: Int,
+    ): Map<Int, Int> {
+        val cap = maxMeeples.coerceIn(1, 20)
+        return mapOf(
+            1 to (original[1] ?: cap).coerceIn(0, cap),
+            2 to (original[2] ?: cap).coerceIn(0, cap),
+        )
+    }
+
+    private fun activePlayersLocked(): List<Int> {
+        if (soloMode || match.players[2] == null) return listOf(1)
+        return listOf(1, 2)
     }
 
     private fun playerByToken(token: String): PlayerSlot? {
@@ -763,5 +1056,8 @@ class HostGameManager(
         private const val INVITE_TTL_MS = 120_000L
         private const val INVITE_RETAIN_MS = 300_000L
         private const val DISCONNECTED_PLAYER_RELEASE_MS = 90_000L
+        private const val MAX_RANDOM_DRAW_ATTEMPTS = 220
+        private const val RANDOM_QUEUE_TARGET = 96
+        private const val RANDOM_QUEUE_REFILL_MIN = 48
     }
 }

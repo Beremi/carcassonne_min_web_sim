@@ -1,6 +1,7 @@
 package com.carcassonne.lan
 
 import com.carcassonne.lan.core.CarcassonneEngine
+import com.carcassonne.lan.model.GameRules
 import com.carcassonne.lan.model.TileDef
 import com.carcassonne.lan.model.TileEdge
 import com.carcassonne.lan.model.TileFeature
@@ -154,5 +155,57 @@ class HostGameManagerTest {
         val watched = manager.poll(watchingToken)
         assertTrue(watched.ok)
         assertNull(watched.match?.turnState?.intent)
+    }
+
+    @Test
+    fun inviteResendForSameNameReusesIdAndUpdatesRules() {
+        val engine = CarcassonneEngine(simpleTileset())
+        val manager = HostGameManager(engine = engine, random = Random(17), nowMs = { 4000L })
+
+        manager.configureHostPlayer("Host1000")
+        val first = manager.sendInvite(
+            fromNameRaw = "Remote2000",
+            rules = GameRules(meeplesPerPlayer = 7, randomizedMode = false),
+        )
+        assertTrue(first.ok)
+        val firstId = first.inviteId.orEmpty()
+        assertTrue(firstId.isNotBlank())
+
+        val second = manager.sendInvite(
+            fromNameRaw = "Remote2000",
+            rules = GameRules(meeplesPerPlayer = 9, randomizedMode = true, randomizedMoveLimit = 44),
+        )
+        assertTrue(second.ok)
+        assertEquals(firstId, second.inviteId)
+
+        val listed = manager.listIncomingInvites()
+        assertTrue(listed.ok)
+        assertEquals(1, listed.invites.size)
+        assertEquals(9, listed.invites.first().rules?.meeplesPerPlayer)
+        assertTrue(listed.invites.first().rules?.randomizedMode == true)
+        assertEquals(44, listed.invites.first().rules?.randomizedMoveLimit)
+    }
+
+    @Test
+    fun drawQueueInitializedForNormalAndRandomModes() {
+        val engine = CarcassonneEngine(simpleTileset())
+        val manager = HostGameManager(engine = engine, random = Random(19), nowMs = { 5000L })
+
+        val initial = manager.snapshot()
+        val remainingInitial = initial.remaining.values.sumOf { it.coerceAtLeast(0) }
+        assertEquals(remainingInitial, initial.drawQueue.size)
+        assertTrue(initial.drawQueue.all { it == "A" })
+
+        val applyRandom = manager.configureGameRules(
+            GameRules(
+                meeplesPerPlayer = 7,
+                randomizedMode = true,
+                randomizedMoveLimit = 30,
+            )
+        )
+        assertTrue(applyRandom.ok)
+        val randomSnap = manager.snapshot()
+        assertTrue(randomSnap.rules.randomizedMode)
+        assertTrue(randomSnap.drawQueue.isNotEmpty())
     }
 }

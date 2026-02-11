@@ -55,6 +55,16 @@ data class TurnIntentState(
 )
 
 @Serializable
+data class GameRules(
+    val meeplesPerPlayer: Int = 7,
+    val smallCityTwoTilesFourPoints: Boolean = true,
+    val randomizedMode: Boolean = false,
+    val randomizedMoveLimit: Int = 72,
+    val previewEnabled: Boolean = false,
+    val previewCount: Int = 4,
+)
+
+@Serializable
 data class MatchState(
     val id: String,
     val status: MatchStatus = MatchStatus.WAITING,
@@ -66,8 +76,10 @@ data class MatchState(
     val scoredKeys: Set<String> = emptySet(),
     val scoredAreaHistory: Map<String, AreaScoreHistoryEntry> = emptyMap(),
     val meeplesAvailable: Map<Int, Int> = mapOf(1 to 7, 2 to 7),
+    val rules: GameRules = GameRules(),
     val turnState: TurnState = TurnState(player = 1),
     val nextTiles: Map<Int, String?> = mapOf(1 to null, 2 to null),
+    val drawQueue: List<String> = emptyList(),
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long,
     val lastEvent: String = "",

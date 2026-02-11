@@ -33,6 +33,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -211,24 +212,34 @@ fun BoardView(
                     ),
                 )
 
-                for (poly in hl.polygons) {
-                    if (poly.size < 3) continue
-                    val path = Path()
-                    path.moveTo(topLeft.x + poly[0].x * cellPx, topLeft.y + poly[0].y * cellPx)
-                    for (i in 1 until poly.size) {
-                        path.lineTo(topLeft.x + poly[i].x * cellPx, topLeft.y + poly[i].y * cellPx)
+                val polygonPaths = hl.polygons.mapNotNull { poly ->
+                    if (poly.size < 3) return@mapNotNull null
+                    Path().apply {
+                        moveTo(topLeft.x + poly[0].x * cellPx, topLeft.y + poly[0].y * cellPx)
+                        for (i in 1 until poly.size) {
+                            lineTo(topLeft.x + poly[i].x * cellPx, topLeft.y + poly[i].y * cellPx)
+                        }
+                        close()
                     }
-                    path.close()
-                    if (hl.dashedOnly) {
+                }
+
+                if (hl.dashedOnly) {
+                    for (path in polygonPaths) {
                         drawPath(
                             path = path,
                             color = Color(0xCC111111),
                             style = dashedStroke,
                         )
-                    } else {
-                        drawPath(path = path, color = tone.copy(alpha = 0.30f))
-                        drawPath(path = path, color = tone.copy(alpha = 0.92f), style = Stroke(width = 1.8f))
                     }
+                } else if (polygonPaths.isNotEmpty()) {
+                    val merged = Path().apply {
+                        fillType = PathFillType.EvenOdd
+                        for (path in polygonPaths) {
+                            addPath(path)
+                        }
+                    }
+                    drawPath(path = merged, color = tone.copy(alpha = 0.30f))
+                    drawPath(path = merged, color = tone.copy(alpha = 0.92f), style = Stroke(width = 1.8f))
                 }
 
                 val markerCenter = when {
@@ -628,7 +639,7 @@ private val EDGE_TO_FIELD_HALVES = mapOf(
 )
 private val HALF_FIELD_PORTS = setOf("Nw", "Ne", "En", "Es", "Se", "Sw", "Ws", "Wn")
 
-private fun DrawScope.drawSimplifiedTile(
+internal fun DrawScope.drawSimplifiedTile(
     sizePx: Float,
     tile: TileVisualState?,
     alpha: Float = 1f,

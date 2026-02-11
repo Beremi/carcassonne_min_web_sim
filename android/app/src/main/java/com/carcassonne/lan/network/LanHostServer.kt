@@ -159,7 +159,7 @@ class LanHostServer(
                 "/api/invite/send" -> {
                     val req = decodeBody(session, com.carcassonne.lan.model.InviteSendRequest.serializer())
                         ?: return badRequest("Invalid JSON payload.")
-                    val out = manager.sendInvite(req.fromName)
+                    val out = manager.sendInvite(req.fromName, req.rules)
                     jsonResponse(
                         status = if (out.ok) Response.Status.OK else Response.Status.BAD_REQUEST,
                         serializer = com.carcassonne.lan.model.InviteSendResponse.serializer(),

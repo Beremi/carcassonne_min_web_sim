@@ -10,6 +10,7 @@ data class PingResponse(
     val hostName: String,
     val matchStatus: MatchStatus,
     val openSlots: Int,
+    val rules: GameRules = GameRules(),
     val players: List<PlayerSummary>,
 )
 
@@ -87,6 +88,7 @@ data class GenericOkResponse(
 @Serializable
 data class InviteSendRequest(
     val fromName: String,
+    val rules: GameRules? = null,
 )
 
 @Serializable
@@ -116,6 +118,7 @@ data class InviteListItem(
     val fromName: String,
     val createdAtEpochMs: Long,
     val status: String,
+    val rules: GameRules? = null,
 )
 
 @Serializable

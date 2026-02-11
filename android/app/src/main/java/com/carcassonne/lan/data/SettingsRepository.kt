@@ -18,19 +18,27 @@ data class AppSettings(
     val playerName: String,
     val port: Int,
     val simplifiedView: Boolean,
+    val previewPaneHeightPercent: Int,
 )
 
 class SettingsRepository(private val context: Context) {
     private val keyPlayerName = stringPreferencesKey("player_name")
     private val keyPort = intPreferencesKey("lan_port")
     private val keySimplifiedView = booleanPreferencesKey("simplified_view")
+    private val keyPreviewPaneHeightPercent = intPreferencesKey("preview_pane_height_percent")
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { prefs ->
         val storedName = prefs[keyPlayerName].orEmpty()
         val safeName = NameGenerator.ensureNumericSuffix(storedName)
         val port = sanitizePort(prefs[keyPort])
         val simplified = prefs[keySimplifiedView] ?: false
-        AppSettings(playerName = safeName, port = port, simplifiedView = simplified)
+        val previewPaneHeight = sanitizePreviewPaneHeight(prefs[keyPreviewPaneHeightPercent])
+        AppSettings(
+            playerName = safeName,
+            port = port,
+            simplifiedView = simplified,
+            previewPaneHeightPercent = previewPaneHeight,
+        )
     }
 
     suspend fun initializeDefaultsIfNeeded() {
@@ -43,16 +51,24 @@ class SettingsRepository(private val context: Context) {
             }
             prefs[keyPort] = sanitizePort(prefs[keyPort])
             prefs[keySimplifiedView] = prefs[keySimplifiedView] ?: false
+            prefs[keyPreviewPaneHeightPercent] = sanitizePreviewPaneHeight(prefs[keyPreviewPaneHeightPercent])
         }
     }
 
-    suspend fun save(playerName: String, port: Int, simplifiedView: Boolean) {
+    suspend fun save(
+        playerName: String,
+        port: Int,
+        simplifiedView: Boolean,
+        previewPaneHeightPercent: Int,
+    ) {
         val safeName = NameGenerator.ensureNumericSuffix(playerName)
         val safePort = sanitizePort(port)
+        val safePreviewPaneHeight = sanitizePreviewPaneHeight(previewPaneHeightPercent)
         context.dataStore.edit { prefs ->
             prefs[keyPlayerName] = safeName
             prefs[keyPort] = safePort
             prefs[keySimplifiedView] = simplifiedView
+            prefs[keyPreviewPaneHeightPercent] = safePreviewPaneHeight
         }
     }
 
@@ -62,6 +78,11 @@ class SettingsRepository(private val context: Context) {
         fun sanitizePort(raw: Int?): Int {
             val value = raw ?: DEFAULT_PORT
             return value.coerceIn(1024, 65535)
+        }
+
+        fun sanitizePreviewPaneHeight(raw: Int?): Int {
+            val value = raw ?: 15
+            return value.coerceIn(6, 35)
         }
     }
 }

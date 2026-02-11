@@ -2,6 +2,7 @@ package com.carcassonne.lan.network
 
 import com.carcassonne.lan.model.ClientSession
 import com.carcassonne.lan.model.HeartbeatRequest
+import com.carcassonne.lan.model.GameRules
 import com.carcassonne.lan.model.InviteSendRequest
 import com.carcassonne.lan.model.InviteSendResponse
 import com.carcassonne.lan.model.InviteStatusResponse
@@ -59,12 +60,17 @@ class LanClient {
             responseSerializer = JoinResponse.serializer(),
         )
 
-    suspend fun sendInvite(host: String, port: Int, fromName: String): InviteSendResponse =
+    suspend fun sendInvite(
+        host: String,
+        port: Int,
+        fromName: String,
+        rules: GameRules,
+    ): InviteSendResponse =
         postJson(
             host = host,
             port = port,
             path = "/api/invite/send",
-            body = InviteSendRequest(fromName = fromName),
+            body = InviteSendRequest(fromName = fromName, rules = rules),
             serializer = InviteSendRequest.serializer(),
             responseSerializer = InviteSendResponse.serializer(),
         )

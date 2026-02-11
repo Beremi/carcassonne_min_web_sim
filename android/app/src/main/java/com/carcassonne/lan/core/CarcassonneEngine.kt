@@ -6,6 +6,7 @@ import com.carcassonne.lan.model.TileDef
 import com.carcassonne.lan.model.TileEdge
 import com.carcassonne.lan.model.TileFeature
 import com.carcassonne.lan.model.TilesetPayload
+import com.carcassonne.lan.model.GameRules
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -466,13 +467,25 @@ class CarcassonneEngine(
         return Analysis(uf = uf, nodeMeta = nodeMeta, groups = groups)
     }
 
-    fun scoreFeature(group: FeatureGroup, completed: Boolean): Int {
+    fun scoreFeature(
+        group: FeatureGroup,
+        completed: Boolean,
+        rules: GameRules = GameRules(),
+    ): Int {
         return when (group.type) {
             "road" -> group.tiles.size
             "city" -> {
                 val tiles = group.tiles.size
                 val pennants = group.pennants
-                if (completed) (2 * tiles + 2 * pennants) else (tiles + pennants)
+                if (completed) {
+                    if (!rules.smallCityTwoTilesFourPoints && tiles == 2 && pennants == 0) {
+                        2
+                    } else {
+                        (2 * tiles + 2 * pennants)
+                    }
+                } else {
+                    (tiles + pennants)
+                }
             }
 
             "cloister" -> if (completed) 9 else (1 + group.adjacentCount)
@@ -481,12 +494,12 @@ class CarcassonneEngine(
         }
     }
 
-    fun scoreEndNowValue(group: FeatureGroup): Int {
+    fun scoreEndNowValue(group: FeatureGroup, rules: GameRules = GameRules()): Int {
         return when (group.type) {
-            "city" -> scoreFeature(group, group.complete)
-            "road" -> scoreFeature(group, completed = true)
-            "cloister" -> scoreFeature(group, completed = false)
-            "field" -> scoreFeature(group, completed = false)
+            "city" -> scoreFeature(group, group.complete, rules)
+            "road" -> scoreFeature(group, completed = true, rules = rules)
+            "cloister" -> scoreFeature(group, completed = false, rules = rules)
+            "field" -> scoreFeature(group, completed = false, rules = rules)
             else -> 0
         }
     }
