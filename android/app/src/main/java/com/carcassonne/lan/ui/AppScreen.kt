@@ -17,12 +17,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -480,15 +483,30 @@ private fun ScorePanel(
     selectedKey: String?,
     onSelect: (String?) -> Unit,
 ) {
-    val openGroups = groups.filter { !it.closedScored }
-    val closedGroups = groups.filter { it.closedScored }
+    val typeSpecs = listOf(
+        "city" to "City",
+        "road" to "Road",
+        "field" to "Field",
+        "cloister" to "Cloister",
+    )
     Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-        Text(
-            "Score P1:${currentScore[1] ?: 0}|P2:${currentScore[2] ?: 0} / " +
-                "Projection P1:${projectedFinalScore[1] ?: 0}|P2:${projectedFinalScore[2] ?: 0}",
-            fontWeight = FontWeight.Bold,
-            style = MaterialTheme.typography.bodySmall,
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text("Score", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+            ColoredPairNumbers(
+                left = currentScore[1] ?: 0,
+                right = currentScore[2] ?: 0,
+                textStyle = MaterialTheme.typography.bodySmall,
+            )
+            Text("Projection", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+            ColoredPairNumbers(
+                left = projectedFinalScore[1] ?: 0,
+                right = projectedFinalScore[2] ?: 0,
+                textStyle = MaterialTheme.typography.bodySmall,
+            )
+        }
         if (groups.isEmpty()) {
             Spacer(modifier = Modifier.height(4.dp))
             Text("No active scoring areas yet.", style = MaterialTheme.typography.bodySmall)
@@ -496,34 +514,68 @@ private fun ScorePanel(
         }
 
         Spacer(modifier = Modifier.height(4.dp))
-        LazyColumn(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 56.dp, max = 180.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            items(openGroups) { group ->
-                ScoreGroupRow(
-                    group = group,
-                    selected = selectedKey == group.key,
-                    onClick = { onSelect(group.key) },
+            for ((type, title) in typeSpecs) {
+                ScoreTypeColumn(
+                    modifier = Modifier.weight(1f),
+                    type = type,
+                    title = title,
+                    groups = groups,
+                    selectedKey = selectedKey,
+                    onSelect = onSelect,
                 )
             }
-            if (closedGroups.isNotEmpty()) {
-                item {
-                    Spacer(modifier = Modifier.height(2.dp))
+        }
+    }
+}
+
+@Composable
+private fun ScoreTypeColumn(
+    modifier: Modifier = Modifier,
+    type: String,
+    title: String,
+    groups: List<ScoreGroupState>,
+    selectedKey: String?,
+    onSelect: (String?) -> Unit,
+) {
+    val typed = groups.filter { it.type.equals(type, ignoreCase = true) }
+    val open = typed.filter { !it.closedScored }
+    val closed = typed.filter { it.closedScored }
+    val ordered = open + closed
+
+    Column(modifier = modifier) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        if (ordered.isEmpty()) {
+            Text(
+                text = "-",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF555555),
+            )
+            return
+        }
+        Column(
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+        ) {
+            ordered.forEachIndexed { idx, group ->
+                if (idx == open.size && open.isNotEmpty() && closed.isNotEmpty()) {
                     HorizontalDivider(color = Color(0x66444444), thickness = 1.dp)
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Closed",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Bold,
-                    )
                 }
-            }
-            items(closedGroups) { group ->
-                ScoreGroupRow(
+                ScoreCompactEntry(
                     group = group,
+                    index = idx + 1,
                     selected = selectedKey == group.key,
                     onClick = { onSelect(group.key) },
                 )
@@ -533,24 +585,80 @@ private fun ScorePanel(
 }
 
 @Composable
-private fun ScoreGroupRow(
+private fun ScoreCompactEntry(
     group: ScoreGroupState,
+    index: Int,
     selected: Boolean,
     onClick: () -> Unit,
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
+    val winnerBg = when {
+        group.p1EndNowScore > group.p2EndNowScore -> Color(0xFF2B6BE1)
+        group.p2EndNowScore > group.p1EndNowScore -> Color(0xFFD53E3E)
+        group.p1EndNowScore == group.p2EndNowScore && group.p1EndNowScore > 0 -> Color(0xFF9C6BDA)
+        else -> Color(0xFFEDE7D9)
+    }.copy(alpha = if (selected) 0.32f else 0.20f)
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = winnerBg),
+    ) {
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onClick)
-                .padding(horizontal = 8.dp, vertical = 6.dp),
+                .padding(horizontal = 5.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "${group.label} P1:${group.p1EndNowScore}|P2:${group.p2EndNowScore}",
-                style = MaterialTheme.typography.bodySmall,
+                text = "$index(",
+                style = MaterialTheme.typography.labelSmall,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
             )
+            ColoredPairNumbers(
+                left = group.meeplesP1,
+                right = group.meeplesP2,
+                textStyle = MaterialTheme.typography.labelSmall,
+            )
+            Text(
+                text = "): ",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            )
+            ColoredPairNumbers(
+                left = group.p1EndNowScore,
+                right = group.p2EndNowScore,
+                textStyle = MaterialTheme.typography.labelSmall,
+            )
         }
+    }
+}
+
+@Composable
+private fun ColoredPairNumbers(
+    left: Int,
+    right: Int,
+    textStyle: androidx.compose.ui.text.TextStyle,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = left.toString(),
+            style = textStyle,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF2B6BE1),
+        )
+        Text(
+            text = "/",
+            style = textStyle,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF212121),
+        )
+        Text(
+            text = right.toString(),
+            style = textStyle,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFFD53E3E),
+        )
     }
 }
 

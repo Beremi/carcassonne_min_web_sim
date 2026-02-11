@@ -17,6 +17,7 @@ import com.carcassonne.lan.model.PingResponse
 import com.carcassonne.lan.network.HostGameManager
 import com.carcassonne.lan.network.LanClient
 import com.carcassonne.lan.network.LanHostServer
+import com.carcassonne.lan.network.LanPresenceBeacon
 import com.carcassonne.lan.network.LanScanner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -119,6 +120,15 @@ private data class IntPoint(
     val y: Int,
 )
 
+private data class PresenceHostRecord(
+    val address: String,
+    val port: Int,
+    var hostName: String,
+    var lastSeenEpochMs: Long,
+    var lastPingEpochMs: Long = 0L,
+    var card: HostCard? = null,
+)
+
 data class BoardMeepleState(
     val cellKey: String,
     val x: Float,
@@ -219,6 +229,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val metadataStore = MatchMetadataStore(application)
     private val lanClient = LanClient()
     private val lanScanner = LanScanner()
+    private val lanPresenceBeacon = LanPresenceBeacon()
 
     private val _uiState = MutableStateFlow(AppUiState())
     val uiState: StateFlow<AppUiState> = _uiState.asStateFlow()
@@ -230,8 +241,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private var pollJob: Job? = null
     private var scanJob: Job? = null
+    private var presenceBroadcastJob: Job? = null
+    private var presenceListenJob: Job? = null
     private var lastPublishedIntent: PublishedTurnIntentState? = null
     private val simplifiedFieldContourCache = mutableMapOf<String, Map<String, List<List<NormPoint>>>>()
+    private val presenceLock = Any()
+    private val presenceHosts = linkedMapOf<String, PresenceHostRecord>()
+    private var recentScannedHosts: List<HostCard> = emptyList()
 
     init {
         viewModelScope.launch {
@@ -263,6 +279,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        stopPresenceLoops()
+        scanJob?.cancel()
+        pollJob?.cancel()
         hostServer?.stop()
     }
 
@@ -762,6 +781,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             hostManager?.configureHostPlayer(fresh.playerName)
             hostServer?.start(fresh.port)
             hostManager?.snapshot()?.let { metadataStore.saveHost(it) }
+            restartPresenceLoops()
 
             _uiState.update {
                 it.copy(
@@ -836,6 +856,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
 
+        restartPresenceLoops()
         viewModelScope.launch {
             refreshLocalIps()
         }
@@ -847,18 +868,199 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun startScanningLoop() {
         scanJob?.cancel()
         scanJob = viewModelScope.launch {
+            var tick = 0
             while (isActive) {
                 refreshIncomingInvites()
                 refreshOutgoingInviteStatus()
-                scanOnce()
-                delay(6500)
+                val shouldRunActiveScan = tick % ACTIVE_SCAN_EVERY_TICKS == 0 || _uiState.value.hosts.isEmpty()
+                if (shouldRunActiveScan) {
+                    scanOnce()
+                } else {
+                    publishMergedHosts(preferDiscoveryStatus = true)
+                }
+                tick += 1
+                delay(SCAN_LOOP_INTERVAL_MS)
             }
+        }
+    }
+
+    private fun restartPresenceLoops() {
+        stopPresenceLoops()
+        synchronized(presenceLock) {
+            presenceHosts.clear()
+            recentScannedHosts = emptyList()
+        }
+
+        presenceBroadcastJob = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                val state = _uiState.value
+                runCatching {
+                    lanPresenceBeacon.send(
+                        port = state.settings.port,
+                        hostName = state.settings.playerName,
+                    )
+                }
+                delay(PRESENCE_BROADCAST_INTERVAL_MS)
+            }
+        }
+
+        presenceListenJob = viewModelScope.launch(Dispatchers.IO) {
+            var socket = runCatching {
+                lanPresenceBeacon.openListener(_uiState.value.settings.port)
+            }.getOrNull()
+            var listeningPort = _uiState.value.settings.port
+
+            while (isActive) {
+                val targetPort = _uiState.value.settings.port
+                if (socket == null || listeningPort != targetPort || socket.isClosed) {
+                    runCatching { socket?.close() }
+                    socket = runCatching { lanPresenceBeacon.openListener(targetPort) }.getOrNull()
+                    listeningPort = targetPort
+                    if (socket == null) {
+                        delay(PRESENCE_LISTENER_RETRY_MS)
+                        continue
+                    }
+                }
+
+                val signal = runCatching {
+                    lanPresenceBeacon.receive(socket = socket, timeoutMs = PRESENCE_LISTEN_TIMEOUT_MS)
+                }.getOrNull()
+                if (signal != null) {
+                    handlePresenceSignal(signal)
+                }
+                synchronized(presenceLock) {
+                    prunePresenceLocked(System.currentTimeMillis())
+                }
+            }
+            runCatching { socket?.close() }
+        }
+    }
+
+    private fun stopPresenceLoops() {
+        presenceBroadcastJob?.cancel()
+        presenceBroadcastJob = null
+        presenceListenJob?.cancel()
+        presenceListenJob = null
+    }
+
+    private fun handlePresenceSignal(signal: LanPresenceBeacon.PresenceSignal) {
+        val state = _uiState.value
+        if (signal.port != state.settings.port) return
+        if (signal.hostName.isBlank()) return
+        if (signal.hostName.equals(state.settings.playerName, ignoreCase = true)) return
+
+        val localIps = state.localIpAddresses.toSet()
+        val isSelfAddress = signal.address == "127.0.0.1" || signal.address in localIps
+        if (isSelfAddress) return
+
+        val now = System.currentTimeMillis()
+        val key = "${signal.address}:${signal.port}"
+        val shouldPing = synchronized(presenceLock) {
+            val existing = presenceHosts[key]
+            if (existing == null) {
+                presenceHosts[key] = PresenceHostRecord(
+                    address = signal.address,
+                    port = signal.port,
+                    hostName = signal.hostName,
+                    lastSeenEpochMs = now,
+                    lastPingEpochMs = 0L,
+                    card = null,
+                )
+            } else {
+                existing.hostName = signal.hostName
+                existing.lastSeenEpochMs = now
+            }
+            val record = presenceHosts[key] ?: return@synchronized false
+            val pingNeeded = now - record.lastPingEpochMs >= PRESENCE_PING_THROTTLE_MS
+            if (pingNeeded) {
+                record.lastPingEpochMs = now
+            }
+            prunePresenceLocked(now)
+            pingNeeded
+        }
+
+        if (shouldPing) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val ping = runCatching {
+                    lanClient.ping(signal.address, signal.port)
+                }.getOrNull()
+                if (ping != null) {
+                    synchronized(presenceLock) {
+                        val record = presenceHosts[key]
+                        if (record != null) {
+                            record.hostName = ping.hostName
+                            record.lastSeenEpochMs = System.currentTimeMillis()
+                            record.card = HostCard(
+                                address = signal.address,
+                                port = signal.port,
+                                ping = ping,
+                                isSelf = false,
+                            )
+                        }
+                    }
+                    publishMergedHosts(preferDiscoveryStatus = true)
+                }
+            }
+        } else {
+            publishMergedHosts(preferDiscoveryStatus = true)
+        }
+    }
+
+    private fun prunePresenceLocked(nowMs: Long) {
+        val stale = presenceHosts.entries
+            .filter { (_, record) -> nowMs - record.lastSeenEpochMs > PRESENCE_STALE_MS }
+            .map { it.key }
+        stale.forEach { presenceHosts.remove(it) }
+    }
+
+    private fun mergedHostsForState(state: AppUiState): List<HostCard> {
+        val merged = linkedMapOf<String, HostCard>()
+        synchronized(presenceLock) {
+            for (host in recentScannedHosts) {
+                merged["${host.address}:${host.port}"] = host
+            }
+            val now = System.currentTimeMillis()
+            prunePresenceLocked(now)
+            for ((_, record) in presenceHosts) {
+                val card = record.card ?: continue
+                merged["${card.address}:${card.port}"] = card
+            }
+        }
+
+        return merged.values
+            .filterNot { host ->
+                host.isSelf || host.ping.hostName.equals(state.settings.playerName, ignoreCase = true)
+            }
+            .filter { host -> host.port == state.settings.port }
+            .distinctBy { host -> host.ping.hostName.trim().lowercase() }
+            .sortedWith(
+                compareBy<HostCard> { host -> host.ping.hostName.trim().lowercase() }
+                    .thenBy { host -> host.address },
+            )
+    }
+
+    private fun publishMergedHosts(preferDiscoveryStatus: Boolean) {
+        _uiState.update { state ->
+            val hosts = mergedHostsForState(state)
+            val nextStatus = if (preferDiscoveryStatus && state.tab == AppTab.LOBBY) {
+                if (hosts.isEmpty()) {
+                    "No hosts discovered on port ${state.settings.port}."
+                } else {
+                    "Discovered ${hosts.size} host(s) on port ${state.settings.port}."
+                }
+            } else {
+                state.statusMessage
+            }
+            state.copy(
+                hosts = hosts,
+                statusMessage = nextStatus,
+            )
         }
     }
 
     private suspend fun scanOnce() {
         val state = _uiState.value
-        val hosts = runCatching {
+        val scanned = runCatching {
             lanScanner.scan(state.settings.port).map {
                 HostCard(
                     address = it.address,
@@ -868,21 +1070,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }.getOrElse { emptyList() }
-            .filterNot { host ->
-                host.isSelf || host.ping.hostName.equals(state.settings.playerName, ignoreCase = true)
-            }
-            .distinctBy { host -> host.ping.hostName.trim().lowercase() }
 
-        _uiState.update {
-            it.copy(
-                hosts = hosts,
-                statusMessage = if (hosts.isEmpty()) {
-                    "No hosts discovered on port ${state.settings.port}."
-                } else {
-                    "Discovered ${hosts.size} host(s) on port ${state.settings.port}."
-                },
-            )
+        synchronized(presenceLock) {
+            recentScannedHosts = scanned
+            prunePresenceLocked(System.currentTimeMillis())
         }
+        publishMergedHosts(preferDiscoveryStatus = true)
     }
 
     private suspend fun refreshLocalIps() {
@@ -892,6 +1085,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }.getOrElse { emptyList() }
         _uiState.update { it.copy(localIpAddresses = ips) }
+        publishMergedHosts(preferDiscoveryStatus = false)
     }
 
     private fun startPolling(session: ClientSession) {
@@ -1001,11 +1195,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 heartbeatCounter += 1
-                if (heartbeatCounter % 8 == 0) {
+                if (heartbeatCounter % HEARTBEAT_EVERY_POLLS == 0) {
                     runCatching { lanClient.heartbeat(session) }
                 }
 
-                delay(1200)
+                delay(POLL_INTERVAL_MS)
             }
         }
     }
@@ -2262,7 +2456,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         val tileId = match.turnState.tileId ?: return null
         val current = currentPreview
-        if (current != null && current.tileId == tileId && !current.isUpcomingGhost) {
+        if (current != null && current.tileId == tileId) {
             val legal = e.canPlaceAt(match.board, tileId, current.rotDeg, current.x, current.y)
             return current.copy(legal = legal.ok, reason = legal.reason, isUpcomingGhost = false)
         }
@@ -2429,5 +2623,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val TAG = "AppViewModel"
         private const val BOOTSTRAP_GUARD_DELAY_MS = 10_000L
+        private const val SCAN_LOOP_INTERVAL_MS = 2_200L
+        private const val ACTIVE_SCAN_EVERY_TICKS = 4
+        private const val PRESENCE_BROADCAST_INTERVAL_MS = 1_000L
+        private const val PRESENCE_LISTEN_TIMEOUT_MS = 900
+        private const val PRESENCE_LISTENER_RETRY_MS = 1_200L
+        private const val PRESENCE_STALE_MS = 12_000L
+        private const val PRESENCE_PING_THROTTLE_MS = 1_200L
+        private const val POLL_INTERVAL_MS = 700L
+        private const val HEARTBEAT_EVERY_POLLS = 4
     }
 }

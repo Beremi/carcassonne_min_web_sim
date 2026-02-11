@@ -341,11 +341,12 @@ fun BoardView(
                     }
                 }
 
-                drawRect(
-                    color = intentColor.copy(alpha = if (remoteIntent.locked) 0.96f else 0.82f),
+                drawInsetTileBorder(
                     topLeft = topLeft,
-                    size = Size(cellPx, cellPx),
-                    style = Stroke(width = if (remoteIntent.locked) 4f else 3f),
+                    sizePx = cellPx,
+                    color = intentColor.copy(alpha = if (remoteIntent.locked) 0.96f else 0.82f),
+                    width = if (remoteIntent.locked) 7.5f else 6f,
+                    dashed = false,
                 )
 
                 val selectedFeatureId = remoteIntent.meepleFeatureId
@@ -406,21 +407,12 @@ fun BoardView(
                     }
                 }
 
-                drawRect(
-                    color = previewColor.copy(alpha = if (preview.isUpcomingGhost) 0.88f else 1f),
+                drawInsetTileBorder(
                     topLeft = topLeft,
-                    size = Size(cellPx, cellPx),
-                    style = if (preview.isUpcomingGhost) {
-                        Stroke(
-                            width = 3.4f,
-                            pathEffect = PathEffect.dashPathEffect(
-                                intervals = floatArrayOf(12f, 9f),
-                                phase = 0f,
-                            ),
-                        )
-                    } else {
-                        Stroke(width = 4f)
-                    },
+                    sizePx = cellPx,
+                    color = previewColor.copy(alpha = if (preview.isUpcomingGhost) 0.88f else 1f),
+                    width = if (preview.isUpcomingGhost) 8f else 10f,
+                    dashed = preview.isUpcomingGhost,
                 )
 
                 if (!preview.legal) {
@@ -470,11 +462,12 @@ fun BoardView(
                     }
                 }
 
-                drawRect(
-                    color = activeColor,
+                drawInsetTileBorder(
                     topLeft = topLeft,
-                    size = Size(cellPx, cellPx),
-                    style = Stroke(width = 4f),
+                    sizePx = cellPx,
+                    color = activeColor,
+                    width = 10f,
+                    dashed = false,
                 )
 
                 val markerR = (cellPx * 0.09f).coerceAtLeast(8f)
@@ -1152,6 +1145,34 @@ private fun polygonCentroid(poly: List<NormPoint>): NormPoint {
     return NormPoint(
         x = (x / poly.size).coerceIn(0f, 1f),
         y = (y / poly.size).coerceIn(0f, 1f),
+    )
+}
+
+private fun DrawScope.drawInsetTileBorder(
+    topLeft: Offset,
+    sizePx: Float,
+    color: Color,
+    width: Float,
+    dashed: Boolean,
+) {
+    val stroke = width.coerceAtLeast(1.5f)
+    val inset = (stroke / 2f + 1f).coerceAtMost(sizePx * 0.45f)
+    val inner = (sizePx - inset * 2f).coerceAtLeast(2f)
+    drawRect(
+        color = color,
+        topLeft = Offset(topLeft.x + inset, topLeft.y + inset),
+        size = Size(inner, inner),
+        style = if (dashed) {
+            Stroke(
+                width = stroke,
+                pathEffect = PathEffect.dashPathEffect(
+                    intervals = floatArrayOf(13f, 9f),
+                    phase = 0f,
+                ),
+            )
+        } else {
+            Stroke(width = stroke)
+        },
     )
 }
 
