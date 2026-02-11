@@ -5,6 +5,9 @@ import com.carcassonne.lan.model.GenericOkResponse
 import com.carcassonne.lan.model.HeartbeatRequest
 import com.carcassonne.lan.model.InviteRespondRequest
 import com.carcassonne.lan.model.JoinRequest
+import com.carcassonne.lan.model.ParallelMeepleRequest
+import com.carcassonne.lan.model.ParallelPickRequest
+import com.carcassonne.lan.model.ParallelResolveRequest
 import com.carcassonne.lan.model.PollRequest
 import com.carcassonne.lan.model.SubmitTurnRequest
 import com.carcassonne.lan.model.TurnIntentRequest
@@ -246,6 +249,66 @@ class LanHostServer(
                         x = req.x,
                         y = req.y,
                         rotDeg = req.rotDeg,
+                        meepleFeatureId = req.meepleFeatureId,
+                    )
+                    if (res.ok) {
+                        ioScope.launch {
+                            res.match?.let { metadataStore.saveHost(it) }
+                        }
+                    }
+                    jsonResponse(
+                        status = if (res.ok) Response.Status.OK else Response.Status.BAD_REQUEST,
+                        serializer = com.carcassonne.lan.model.SubmitTurnResponse.serializer(),
+                        payload = res,
+                    )
+                }
+
+                "/api/match/parallel/pick" -> {
+                    val req = decodeBody(session, ParallelPickRequest.serializer())
+                        ?: return badRequest("Invalid JSON payload.")
+                    val res = manager.parallelPickTile(
+                        token = req.token,
+                        pickIndex = req.pickIndex,
+                    )
+                    if (res.ok) {
+                        ioScope.launch {
+                            res.match?.let { metadataStore.saveHost(it) }
+                        }
+                    }
+                    jsonResponse(
+                        status = if (res.ok) Response.Status.OK else Response.Status.BAD_REQUEST,
+                        serializer = com.carcassonne.lan.model.SubmitTurnResponse.serializer(),
+                        payload = res,
+                    )
+                }
+
+                "/api/match/parallel/resolve" -> {
+                    val req = decodeBody(session, ParallelResolveRequest.serializer())
+                        ?: return badRequest("Invalid JSON payload.")
+                    val res = manager.parallelResolveConflict(
+                        token = req.token,
+                        actionRaw = req.action,
+                    )
+                    if (res.ok) {
+                        ioScope.launch {
+                            res.match?.let { metadataStore.saveHost(it) }
+                        }
+                    }
+                    jsonResponse(
+                        status = if (res.ok) Response.Status.OK else Response.Status.BAD_REQUEST,
+                        serializer = com.carcassonne.lan.model.SubmitTurnResponse.serializer(),
+                        payload = res,
+                    )
+                }
+
+                "/api/match/parallel/meeple" -> {
+                    val req = decodeBody(session, ParallelMeepleRequest.serializer())
+                        ?: return badRequest("Invalid JSON payload.")
+                    val res = manager.submitTurn(
+                        token = req.token,
+                        x = 0,
+                        y = 0,
+                        rotDeg = 0,
                         meepleFeatureId = req.meepleFeatureId,
                     )
                     if (res.ok) {

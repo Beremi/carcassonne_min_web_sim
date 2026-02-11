@@ -12,8 +12,10 @@ import com.carcassonne.lan.data.MatchMetadataStore
 import com.carcassonne.lan.data.SettingsRepository
 import com.carcassonne.lan.data.TilesetRepository
 import com.carcassonne.lan.model.ClientSession
+import com.carcassonne.lan.model.GameMode
 import com.carcassonne.lan.model.GameRules
 import com.carcassonne.lan.model.MatchState
+import com.carcassonne.lan.model.ParallelPhase
 import com.carcassonne.lan.model.PingResponse
 import com.carcassonne.lan.network.HostGameManager
 import com.carcassonne.lan.network.LanClient
@@ -336,23 +338,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateLobbyGameRules(
-        meeplesText: String,
-        smallCityTwoTilesFourPoints: Boolean,
-        randomizedMode: Boolean,
-        randomizedMoveLimitText: String,
-        previewEnabled: Boolean,
-        previewCountText: String,
-    ) {
+    fun updateLobbyGameRules(candidateRaw: GameRules) {
         viewModelScope.launch {
             val current = _uiState.value.lobbyRules
-            val candidate = GameRules(
-                meeplesPerPlayer = meeplesText.toIntOrNull() ?: current.meeplesPerPlayer,
-                smallCityTwoTilesFourPoints = smallCityTwoTilesFourPoints,
-                randomizedMode = randomizedMode,
-                randomizedMoveLimit = randomizedMoveLimitText.toIntOrNull() ?: current.randomizedMoveLimit,
-                previewEnabled = previewEnabled,
-                previewCount = previewCountText.toIntOrNull() ?: current.previewCount,
+            val candidate = candidateRaw.copy(
+                meeplesPerPlayer = candidateRaw.meeplesPerPlayer.takeIf { it > 0 } ?: current.meeplesPerPlayer,
+                randomizedMoveLimit = candidateRaw.randomizedMoveLimit.takeIf { it > 0 } ?: current.randomizedMoveLimit,
+                previewCount = candidateRaw.previewCount.takeIf { it > 0 } ?: current.previewCount,
+                parallelSelectionSize = candidateRaw.parallelSelectionSize.takeIf { it > 0 } ?: current.parallelSelectionSize,
+                parallelMoveLimit = candidateRaw.parallelMoveLimit.takeIf { it > 0 } ?: current.parallelMoveLimit,
             )
             val out = hostManager?.configureGameRules(candidate)
             if (out == null || !out.ok) {
@@ -607,11 +601,133 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun pickParallelTile(pickIndex: Int) {
+        val state = _uiState.value
+        val session = state.session ?: return
+        val match = state.match ?: return
+        if (match.rules.gameMode != GameMode.PARALLEL) return
+        viewModelScope.launch {
+            val res = runCatching {
+                lanClient.parallelPickTile(
+                    session = session,
+                    pickIndex = pickIndex,
+                )
+            }.getOrNull()
+            if (res == null || !res.ok || res.match == null) {
+                _uiState.update {
+                    it.copy(statusMessage = res?.error ?: "Failed to pick tile.")
+                }
+                return@launch
+            }
+            applyIncomingMatchState(
+                match = res.match,
+                session = session,
+                statusFallback = "Tile picked.",
+            )
+        }
+    }
+
+    fun resolveParallelConflict(action: String) {
+        val state = _uiState.value
+        val session = state.session ?: return
+        val match = state.match ?: return
+        if (match.rules.gameMode != GameMode.PARALLEL) return
+        viewModelScope.launch {
+            val res = runCatching {
+                lanClient.parallelResolveConflict(
+                    session = session,
+                    action = action,
+                )
+            }.getOrNull()
+            if (res == null || !res.ok || res.match == null) {
+                _uiState.update {
+                    it.copy(statusMessage = res?.error ?: "Failed to resolve conflict.")
+                }
+                return@launch
+            }
+            applyIncomingMatchState(
+                match = res.match,
+                session = session,
+                statusFallback = "Conflict resolved.",
+            )
+        }
+    }
+
     fun onBoardTap(x: Int, y: Int) {
         val e = engine ?: return
         val state = _uiState.value
         val match = state.match ?: return
         val session = state.session ?: return
+        if (match.rules.gameMode == GameMode.PARALLEL) {
+            val round = match.parallelRound
+            if (round == null) {
+                _uiState.update { it.copy(statusMessage = "Parallel round not initialized.") }
+                return
+            }
+            if (round.phase !in setOf(ParallelPhase.PICK, ParallelPhase.PLACE)) {
+                _uiState.update {
+                    it.copy(
+                        statusMessage = when (round.phase) {
+                            ParallelPhase.PICK -> "Pick a tile from the selection strip first."
+                            ParallelPhase.RESOLVE -> "Conflict resolution in progress."
+                            ParallelPhase.MEEPLE -> "Placement done. Confirm meeple selection."
+                            else -> "Wait for your turn."
+                        }
+                    )
+                }
+                return
+            }
+            if (!state.canAct) {
+                _uiState.update { it.copy(statusMessage = "Wait for your opponent.") }
+                return
+            }
+            val playerRound = round.players[session.player]
+            val tileId = playerRound?.pickedTileId
+            if (tileId.isNullOrBlank()) {
+                _uiState.update { it.copy(statusMessage = "Pick a tile from the selection strip first.") }
+                return
+            }
+            if (playerRound.tileLocked) {
+                _uiState.update { it.copy(statusMessage = "Placement already locked. Waiting for resolution.") }
+                return
+            }
+            val current = state.preview
+            val rot = if (current != null && current.x == x && current.y == y) {
+                (current.rotDeg + 90) % 360
+            } else {
+                0
+            }
+            val legal = e.canPlaceAt(match.board, tileId, rot, x, y)
+            _uiState.update {
+                it.copy(
+                    preview = TilePreviewState(
+                        x = x,
+                        y = y,
+                        rotDeg = rot,
+                        tileId = tileId,
+                        legal = legal.ok,
+                        reason = legal.reason,
+                        isUpcomingGhost = false,
+                    ),
+                    statusMessage = if (legal.ok) {
+                        "Preview $tileId at ($x,$y), rotation $rot. Long-press to lock."
+                    } else {
+                        legal.reason
+                    },
+                    inspectSelection = null,
+                )
+            }
+            publishTurnIntent(
+                session = session,
+                match = match,
+                x = x,
+                y = y,
+                rotDeg = rot,
+                meepleFeatureId = null,
+                locked = false,
+            )
+            return
+        }
         val current = state.preview
         val interactiveUpcomingGhost = !state.canAct && current?.isUpcomingGhost == true
 
@@ -710,6 +826,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        if (match.rules.gameMode == GameMode.PARALLEL) {
+            val round = match.parallelRound ?: return
+            if (round.phase !in setOf(ParallelPhase.PICK, ParallelPhase.PLACE) || !state.canAct) return
+            val playerRound = round.players[session.player] ?: return
+            if (playerRound.tileLocked) return
+            val preview = state.preview ?: return
+            if (preview.x != x || preview.y != y) return
+            if (!preview.legal) {
+                _uiState.update { it.copy(statusMessage = preview.reason) }
+                return
+            }
+            _uiState.update {
+                it.copy(
+                    inspectSelection = null,
+                    statusMessage = "Placement locked. Waiting for opponent.",
+                )
+            }
+            publishTurnIntent(
+                session = session,
+                match = match,
+                x = preview.x,
+                y = preview.y,
+                rotDeg = preview.rotDeg,
+                meepleFeatureId = null,
+                locked = true,
+            )
+            return
+        }
+
         if (!state.canAct) return
         val preview = state.preview ?: return
         if (preview.x != x || preview.y != y) return
@@ -750,6 +895,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val match = state.match ?: return
         val locked = state.lockedPlacement ?: return
         val next = if (locked.selectedMeepleFeatureId == featureId) null else featureId
+        if (match.rules.gameMode == GameMode.PARALLEL) {
+            _uiState.update {
+                it.copy(
+                    lockedPlacement = locked.copy(selectedMeepleFeatureId = next),
+                    statusMessage = if (next == null) {
+                        "Meeple cleared. Confirm to skip meeple."
+                    } else {
+                        "Meeple selected: $featureId. Confirm meeple."
+                    },
+                )
+            }
+            return
+        }
         _uiState.update {
             it.copy(
                 lockedPlacement = locked.copy(selectedMeepleFeatureId = next),
@@ -776,6 +934,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val session = state.session ?: return
         val match = state.match ?: return
         val locked = state.lockedPlacement ?: return
+        if (match.rules.gameMode == GameMode.PARALLEL) {
+            _uiState.update {
+                it.copy(
+                    lockedPlacement = locked.copy(selectedMeepleFeatureId = null),
+                    statusMessage = "Meeple selection cleared.",
+                )
+            }
+            return
+        }
         _uiState.update {
             it.copy(
                 lockedPlacement = null,
@@ -808,6 +975,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val locked = state.lockedPlacement ?: return
 
         viewModelScope.launch {
+            val match = _uiState.value.match
+            if (match?.rules?.gameMode == GameMode.PARALLEL) {
+                val res = runCatching {
+                    lanClient.parallelSubmitMeeple(
+                        session = session,
+                        meepleFeatureId = locked.selectedMeepleFeatureId,
+                    )
+                }.getOrNull()
+                if (res == null || !res.ok || res.match == null) {
+                    _uiState.update {
+                        it.copy(statusMessage = res?.error ?: "Failed to confirm meeple.")
+                    }
+                    return@launch
+                }
+                applyIncomingMatchState(
+                    match = res.match,
+                    session = session,
+                    statusFallback = "Meeple confirmed.",
+                )
+                return@launch
+            }
+
             val res = runCatching {
                 lanClient.submitTurn(
                     session = session,
@@ -826,37 +1015,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             lastPublishedIntent = null
-            persistClientSnapshot(session, res.match)
-            val canAct = res.match.status.name == "ACTIVE" && res.match.turnState.player == session.player
-            val boardMeeples = buildBoardMeeples(res.match)
-            val scoreGroups = buildScoreGroups(res.match)
-            val projectedFinalScore = buildProjectedFinalScore(res.match)
-            val selectedKey = _uiState.value.selectedScoreGroupKey
-                ?.takeIf { key -> scoreGroups.any { it.key == key } }
-            val selectedHighlights = scoreGroups.firstOrNull { it.key == selectedKey }?.highlights.orEmpty()
-            val preview = resolveTurnPreview(
+            applyIncomingMatchState(
                 match = res.match,
-                canAct = canAct,
-                currentPreview = null,
-                locked = null,
-                viewerPlayer = session.player,
+                session = session,
+                statusFallback = "Turn submitted.",
             )
-            _uiState.update {
-                it.copy(
-                    match = res.match,
-                    lobbyRules = res.match.rules,
-                    boardMeeples = boardMeeples,
-                    scoreGroups = scoreGroups,
-                    projectedFinalScore = projectedFinalScore,
-                    selectedScoreGroupKey = selectedKey,
-                    selectedScoreHighlights = selectedHighlights,
-                    canAct = canAct,
-                    preview = preview,
-                    lockedPlacement = null,
-                    inspectSelection = null,
-                    statusMessage = "Turn submitted.",
-                )
-            }
         }
     }
 
@@ -1237,70 +1400,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
                 val poll = runCatching { lanClient.poll(session) }.getOrNull()
                 if (poll != null && poll.ok && poll.match != null) {
-                    val canAct = poll.canAct
-                    val currentState = _uiState.value
-                    val boardMeeples = buildBoardMeeples(poll.match)
-                    val scoreGroups = buildScoreGroups(poll.match)
-                    val projectedFinalScore = buildProjectedFinalScore(poll.match)
-                    val selectedKey = currentState.selectedScoreGroupKey
-                        ?.takeIf { key -> scoreGroups.any { it.key == key } }
-                    val nextLocked = currentState.lockedPlacement?.takeIf {
-                        canAct &&
-                            it.tileId == poll.match.turnState.tileId &&
-                            poll.match.turnState.player == session.player
-                    }
-                    val nextPreview = resolveTurnPreview(
+                    applyIncomingMatchState(
                         match = poll.match,
-                        canAct = canAct,
-                        currentPreview = currentState.preview,
-                        locked = nextLocked,
-                        viewerPlayer = session.player,
+                        session = session,
+                        statusFallback = _uiState.value.statusMessage,
+                        canActOverride = poll.canAct,
                     )
-                    val nextInspect = currentState.inspectSelection?.let { inspect ->
-                        val inst = poll.match.board[inspect.cellKey]
-                        if (inst == null || inst.tileId != inspect.tileId || inst.rotDeg != inspect.rotDeg) {
-                            null
-                        } else {
-                            val refreshedOptions = buildInspectOptions(
-                                match = poll.match,
-                                cellKey = inspect.cellKey,
-                            )
-                            val selectedFeature = inspect.selectedFeatureId
-                                ?.takeIf { selected -> refreshedOptions.any { it.featureId == selected } }
-                            inspect.copy(
-                                options = refreshedOptions,
-                                selectedFeatureId = selectedFeature,
-                            )
-                        }
-                    }
-                    val inspectSelection = nextInspect?.selectedFeatureId?.let { selectedFeature ->
-                        buildFeatureSelection(
-                            match = poll.match,
-                            cellKey = nextInspect.cellKey,
-                            featureId = selectedFeature,
-                        )
-                    }
-                    val nextSelectedKey = inspectSelection?.groupKey ?: selectedKey
-                    val nextHighlights = inspectSelection?.highlights
-                        ?: scoreGroups.firstOrNull { it.key == nextSelectedKey }?.highlights.orEmpty()
-                    _uiState.update { current ->
-                        current.copy(
-                            match = poll.match,
-                            lobbyRules = poll.match.rules,
-                            boardMeeples = boardMeeples,
-                            scoreGroups = scoreGroups,
-                            projectedFinalScore = projectedFinalScore,
-                            selectedScoreGroupKey = nextSelectedKey,
-                            selectedScoreHighlights = nextHighlights,
-                            canAct = canAct,
-                            preview = nextPreview,
-                            lockedPlacement = nextLocked,
-                            inspectSelection = nextInspect,
-                            statusMessage = poll.match.lastEvent.ifBlank { current.statusMessage },
-                        )
-                    }
-                    persistClientSnapshot(session, poll.match)
-                    maybePublishCurrentTurnIntent(_uiState.value)
                 } else {
                     val cached = metadataStore.loadClient(sessionKey(session))
                     if (cached != null) {
@@ -1343,6 +1448,177 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun applyIncomingMatchState(
+        match: MatchState,
+        session: ClientSession,
+        statusFallback: String,
+        canActOverride: Boolean? = null,
+    ) {
+        val canAct = canActOverride ?: computeCanActForViewer(match, session.player)
+        val currentState = _uiState.value
+        val boardMeeples = buildBoardMeeples(match)
+        val scoreGroups = buildScoreGroups(match)
+        val projectedFinalScore = buildProjectedFinalScore(match)
+        val selectedKey = currentState.selectedScoreGroupKey
+            ?.takeIf { key -> scoreGroups.any { it.key == key } }
+
+        val nextLocked = if (match.rules.gameMode == GameMode.PARALLEL) {
+            val fromServer = buildParallelMeeplePlacement(
+                match = match,
+                player = session.player,
+            )
+            if (
+                fromServer != null &&
+                currentState.lockedPlacement != null &&
+                fromServer.tileId == currentState.lockedPlacement.tileId &&
+                fromServer.x == currentState.lockedPlacement.x &&
+                fromServer.y == currentState.lockedPlacement.y &&
+                fromServer.selectedMeepleFeatureId == null
+            ) {
+                fromServer.copy(
+                    selectedMeepleFeatureId = currentState.lockedPlacement.selectedMeepleFeatureId,
+                )
+            } else {
+                fromServer
+            }
+        } else {
+            currentState.lockedPlacement?.takeIf {
+                canAct &&
+                    it.tileId == match.turnState.tileId &&
+                    match.turnState.player == session.player
+            }
+        }
+
+        val nextPreview = resolveTurnPreview(
+            match = match,
+            canAct = canAct,
+            currentPreview = currentState.preview,
+            locked = nextLocked,
+            viewerPlayer = session.player,
+        )
+
+        val nextInspect = currentState.inspectSelection?.let { inspect ->
+            val inst = match.board[inspect.cellKey]
+            if (inst == null || inst.tileId != inspect.tileId || inst.rotDeg != inspect.rotDeg) {
+                null
+            } else {
+                val refreshedOptions = buildInspectOptions(
+                    match = match,
+                    cellKey = inspect.cellKey,
+                )
+                val selectedFeature = inspect.selectedFeatureId
+                    ?.takeIf { selected -> refreshedOptions.any { it.featureId == selected } }
+                inspect.copy(
+                    options = refreshedOptions,
+                    selectedFeatureId = selectedFeature,
+                )
+            }
+        }
+
+        val inspectSelection = nextInspect?.selectedFeatureId?.let { selectedFeature ->
+            buildFeatureSelection(
+                match = match,
+                cellKey = nextInspect.cellKey,
+                featureId = selectedFeature,
+            )
+        }
+        val nextSelectedKey = inspectSelection?.groupKey ?: selectedKey
+        val nextHighlights = inspectSelection?.highlights
+            ?: scoreGroups.firstOrNull { it.key == nextSelectedKey }?.highlights.orEmpty()
+
+        _uiState.update { current ->
+            val parallelHint = parallelRepositionHint(
+                match = match,
+                viewerPlayer = session.player,
+            )
+            current.copy(
+                match = match,
+                lobbyRules = match.rules,
+                boardMeeples = boardMeeples,
+                scoreGroups = scoreGroups,
+                projectedFinalScore = projectedFinalScore,
+                selectedScoreGroupKey = nextSelectedKey,
+                selectedScoreHighlights = nextHighlights,
+                canAct = canAct,
+                preview = nextPreview,
+                lockedPlacement = nextLocked,
+                inspectSelection = nextInspect,
+                statusMessage = parallelHint
+                    ?: match.lastEvent.ifBlank { statusFallback.ifBlank { current.statusMessage } },
+            )
+        }
+        persistClientSnapshot(session, match)
+        maybePublishCurrentTurnIntent(_uiState.value)
+    }
+
+    private fun computeCanActForViewer(
+        match: MatchState,
+        viewerPlayer: Int,
+    ): Boolean {
+        if (match.status.name != "ACTIVE") return false
+        if (match.rules.gameMode != GameMode.PARALLEL) {
+            return match.turnState.player == viewerPlayer
+        }
+        val round = match.parallelRound ?: return false
+        val playerState = round.players[viewerPlayer] ?: return false
+        return when (round.phase) {
+            ParallelPhase.PICK -> playerState.pickedTileId == null || !playerState.tileLocked
+            ParallelPhase.PLACE -> playerState.pickedTileId == null || !playerState.tileLocked
+            ParallelPhase.RESOLVE -> round.conflict?.tokenHolder == viewerPlayer
+            ParallelPhase.MEEPLE -> !playerState.meepleConfirmed
+        }
+    }
+
+    private fun buildParallelMeeplePlacement(
+        match: MatchState,
+        player: Int,
+    ): LockedPlacementState? {
+        if (match.rules.gameMode != GameMode.PARALLEL) return null
+        val round = match.parallelRound ?: return null
+        if (round.phase != ParallelPhase.MEEPLE) return null
+        val playerState = round.players[player] ?: return null
+        if (playerState.meepleConfirmed) return null
+        val cellKey = playerState.committedCellKey ?: return null
+        val inst = match.board[cellKey] ?: return null
+        val rot = playerState.committedRotDeg ?: inst.rotDeg
+        val (x, y) = runCatching {
+            val parts = cellKey.split(",", limit = 2)
+            Pair(parts[0].toInt(), parts[1].toInt())
+        }.getOrNull() ?: return null
+        val e = engine ?: return null
+        val options = buildMeepleOptions(
+            engine = e,
+            tileId = inst.tileId,
+            rotDeg = rot,
+        )
+        return LockedPlacementState(
+            x = x,
+            y = y,
+            rotDeg = rot,
+            tileId = inst.tileId,
+            options = options,
+            selectedMeepleFeatureId = playerState.meepleFeatureId,
+        )
+    }
+
+    private fun parallelRepositionHint(
+        match: MatchState,
+        viewerPlayer: Int,
+    ): String? {
+        if (match.rules.gameMode != GameMode.PARALLEL) return null
+        val round = match.parallelRound ?: return null
+        if (round.phase != ParallelPhase.PLACE) return null
+        val me = round.players[viewerPlayer] ?: return null
+        if (me.pickedTileId.isNullOrBlank() || me.tileLocked) return null
+        val othersLocked = round.players.any { (player, state) ->
+            player != viewerPlayer && state.tileLocked && state.intent != null
+        }
+        if (!othersLocked) return null
+        val event = match.lastEvent.lowercase()
+        if (!event.contains("must place in another place")) return null
+        return "Clash: place your tile in another location (or pick another tile)."
+    }
+
     private fun persistClientSnapshot(session: ClientSession, match: MatchState) {
         viewModelScope.launch {
             metadataStore.saveClient(sessionKey(session), match)
@@ -1374,41 +1650,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             playerName = settings.playerName,
         )
         lastPublishedIntent = null
-
-        val canAct = join.match.turnState.player == join.player && join.match.status.name == "ACTIVE"
-        val boardMeeples = buildBoardMeeples(join.match)
-        val scoreGroups = buildScoreGroups(join.match)
-        val projectedFinalScore = buildProjectedFinalScore(join.match)
-        val preview = resolveTurnPreview(
-            match = join.match,
-            canAct = canAct,
-            currentPreview = null,
-            locked = null,
-            viewerPlayer = join.player,
-        )
-
         _uiState.update {
             it.copy(
                 session = session,
-                match = join.match,
-                lobbyRules = join.match.rules,
-                boardMeeples = boardMeeples,
-                scoreGroups = scoreGroups,
-                projectedFinalScore = projectedFinalScore,
+                tab = AppTab.MATCH,
+                outgoingInvite = null,
                 selectedScoreGroupKey = null,
                 selectedScoreHighlights = emptyList(),
-                canAct = canAct,
-                tab = AppTab.MATCH,
-                preview = preview,
-                lockedPlacement = null,
                 inspectSelection = null,
-                outgoingInvite = null,
-                statusMessage = "Connected to $address:$port as P${join.player}",
             )
         }
-
-        persistClientSnapshot(session, join.match)
-        maybePublishCurrentTurnIntent(_uiState.value)
+        applyIncomingMatchState(
+            match = join.match,
+            session = session,
+            statusFallback = "Connected to $address:$port as P${join.player}",
+        )
         startPolling(session)
     }
 
@@ -2643,6 +2899,41 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewerPlayer: Int?,
     ): TilePreviewState? {
         val e = engine ?: return null
+        if (match.rules.gameMode == GameMode.PARALLEL) {
+            val viewer = viewerPlayer ?: return null
+            val round = match.parallelRound ?: return null
+            val playerRound = round.players[viewer] ?: return null
+            if (round.phase == ParallelPhase.MEEPLE) return null
+            if (round.phase == ParallelPhase.RESOLVE || playerRound.tileLocked) {
+                val intent = playerRound.intent ?: return null
+                val legal = e.canPlaceAt(match.board, intent.tileId, intent.rotDeg, intent.x, intent.y)
+                return TilePreviewState(
+                    x = intent.x,
+                    y = intent.y,
+                    rotDeg = intent.rotDeg,
+                    tileId = intent.tileId,
+                    legal = legal.ok,
+                    reason = legal.reason,
+                    isUpcomingGhost = false,
+                )
+            }
+            val pickedTile = playerRound.pickedTileId ?: return null
+            val current = currentPreview
+            if (current != null && current.tileId == pickedTile) {
+                val legal = e.canPlaceAt(match.board, pickedTile, current.rotDeg, current.x, current.y)
+                return current.copy(
+                    legal = legal.ok,
+                    reason = legal.reason,
+                    isUpcomingGhost = false,
+                )
+            }
+            return firstClosestPreview(
+                engine = e,
+                match = match,
+                tileId = pickedTile,
+                asUpcomingGhost = false,
+            )
+        }
         if (!canAct) {
             val upcomingTile = viewerPlayer?.let { player -> match.nextTiles[player] }
             if (!upcomingTile.isNullOrBlank()) {
@@ -2732,6 +3023,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun maybePublishCurrentTurnIntent(state: AppUiState) {
         val session = state.session ?: return
         val match = state.match ?: return
+        if (match.rules.gameMode == GameMode.PARALLEL) {
+            return
+        }
         if (!state.canAct || match.status.name != "ACTIVE" || match.turnState.player != session.player) {
             clearTurnIntentIfNeeded(session)
             return
@@ -2777,13 +3071,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         meepleFeatureId: String?,
         locked: Boolean,
     ) {
-        val tileId = match.turnState.tileId ?: return
-        if (match.status.name != "ACTIVE" || match.turnState.player != session.player) return
+        if (match.status.name != "ACTIVE") return
+        val tileId = if (match.rules.gameMode == GameMode.PARALLEL) {
+            val round = match.parallelRound ?: return
+            val playerRound = round.players[session.player] ?: return
+            if (round.phase !in setOf(ParallelPhase.PICK, ParallelPhase.PLACE)) return
+            playerRound.pickedTileId ?: return
+        } else {
+            val t = match.turnState.tileId ?: return
+            if (match.status.name != "ACTIVE" || match.turnState.player != session.player) return
+            t
+        }
         val normalizedRot = (((rotDeg % 360) + 360) % 360 / 90) * 90
         val normalizedMeeple = meepleFeatureId?.trim().orEmpty().ifBlank { null }
         val fingerprint = PublishedTurnIntentState(
             token = session.token,
-            turnIndex = match.turnState.turnIndex,
+            turnIndex = if (match.rules.gameMode == GameMode.PARALLEL) {
+                match.parallelRound?.roundIndex ?: match.turnState.turnIndex
+            } else {
+                match.turnState.turnIndex
+            },
             tileId = tileId,
             x = x,
             y = y,

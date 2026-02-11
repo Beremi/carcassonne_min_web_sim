@@ -8,6 +8,9 @@ import com.carcassonne.lan.model.InviteSendResponse
 import com.carcassonne.lan.model.InviteStatusResponse
 import com.carcassonne.lan.model.JoinRequest
 import com.carcassonne.lan.model.JoinResponse
+import com.carcassonne.lan.model.ParallelMeepleRequest
+import com.carcassonne.lan.model.ParallelPickRequest
+import com.carcassonne.lan.model.ParallelResolveRequest
 import com.carcassonne.lan.model.PingResponse
 import com.carcassonne.lan.model.PollRequest
 import com.carcassonne.lan.model.PollResponse
@@ -122,6 +125,54 @@ class LanClient {
                 meepleFeatureId = meepleFeatureId,
             ),
             serializer = SubmitTurnRequest.serializer(),
+            responseSerializer = SubmitTurnResponse.serializer(),
+        )
+
+    suspend fun parallelPickTile(
+        session: ClientSession,
+        pickIndex: Int,
+    ): SubmitTurnResponse =
+        postJson(
+            host = session.hostAddress,
+            port = session.port,
+            path = "/api/match/parallel/pick",
+            body = ParallelPickRequest(
+                token = session.token,
+                pickIndex = pickIndex,
+            ),
+            serializer = ParallelPickRequest.serializer(),
+            responseSerializer = SubmitTurnResponse.serializer(),
+        )
+
+    suspend fun parallelResolveConflict(
+        session: ClientSession,
+        action: String,
+    ): SubmitTurnResponse =
+        postJson(
+            host = session.hostAddress,
+            port = session.port,
+            path = "/api/match/parallel/resolve",
+            body = ParallelResolveRequest(
+                token = session.token,
+                action = action,
+            ),
+            serializer = ParallelResolveRequest.serializer(),
+            responseSerializer = SubmitTurnResponse.serializer(),
+        )
+
+    suspend fun parallelSubmitMeeple(
+        session: ClientSession,
+        meepleFeatureId: String?,
+    ): SubmitTurnResponse =
+        postJson(
+            host = session.hostAddress,
+            port = session.port,
+            path = "/api/match/parallel/meeple",
+            body = ParallelMeepleRequest(
+                token = session.token,
+                meepleFeatureId = meepleFeatureId,
+            ),
+            serializer = ParallelMeepleRequest.serializer(),
             responseSerializer = SubmitTurnResponse.serializer(),
         )
 

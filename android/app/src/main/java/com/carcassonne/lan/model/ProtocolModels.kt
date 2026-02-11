@@ -75,6 +75,24 @@ data class SubmitTurnResponse(
 )
 
 @Serializable
+data class ParallelPickRequest(
+    val token: String,
+    val pickIndex: Int,
+)
+
+@Serializable
+data class ParallelResolveRequest(
+    val token: String,
+    val action: String,
+)
+
+@Serializable
+data class ParallelMeepleRequest(
+    val token: String,
+    val meepleFeatureId: String? = null,
+)
+
+@Serializable
 data class HeartbeatRequest(
     val token: String,
 )

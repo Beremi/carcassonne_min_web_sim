@@ -61,9 +61,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.carcassonne.lan.model.GameMode
 import com.carcassonne.lan.model.GameRules
 import com.carcassonne.lan.model.MatchState
 import com.carcassonne.lan.model.MatchStatus
+import com.carcassonne.lan.model.ParallelPhase
+import com.carcassonne.lan.model.ParallelRoundState
+import kotlinx.coroutines.delay
 
 @Composable
 fun CarcassonneAppRoot(vm: AppViewModel = viewModel()) {
@@ -113,6 +117,8 @@ fun CarcassonneAppRoot(vm: AppViewModel = viewModel()) {
                             onConfirmPlacement = vm::confirmLockedPlacement,
                             onRevertPlacement = vm::revertLockedPlacement,
                             onSelectScoreGroup = vm::selectScoreGroup,
+                            onPickParallelTile = vm::pickParallelTile,
+                            onResolveParallelConflict = vm::resolveParallelConflict,
                             onDisconnect = vm::disconnectSession,
                         )
 
@@ -190,7 +196,7 @@ private fun LobbyScreen(
     state: AppUiState,
     onRefresh: () -> Unit,
     onSoloPlay: () -> Unit,
-    onApplyGameRules: (String, Boolean, Boolean, String, Boolean, String) -> Unit,
+    onApplyGameRules: (GameRules) -> Unit,
     onInviteHost: (HostCard) -> Unit,
     onAcceptInvite: (String) -> Unit,
     onDeclineInvite: (String) -> Unit,
@@ -201,8 +207,8 @@ private fun LobbyScreen(
     var smallCityFourPoints by rememberSaveable(state.lobbyRules.smallCityTwoTilesFourPoints) {
         mutableStateOf(state.lobbyRules.smallCityTwoTilesFourPoints)
     }
-    var randomizedMode by rememberSaveable(state.lobbyRules.randomizedMode) {
-        mutableStateOf(state.lobbyRules.randomizedMode)
+    var gameMode by rememberSaveable(state.lobbyRules.gameMode) {
+        mutableStateOf(state.lobbyRules.gameMode)
     }
     var randomizedMovesText by rememberSaveable(state.lobbyRules.randomizedMoveLimit) {
         mutableStateOf(state.lobbyRules.randomizedMoveLimit.toString())
@@ -212,6 +218,28 @@ private fun LobbyScreen(
     }
     var previewCountText by rememberSaveable(state.lobbyRules.previewCount) {
         mutableStateOf(state.lobbyRules.previewCount.toString())
+    }
+    var parallelSelectionText by rememberSaveable(state.lobbyRules.parallelSelectionSize) {
+        mutableStateOf(state.lobbyRules.parallelSelectionSize.toString())
+    }
+    var parallelMovesText by rememberSaveable(state.lobbyRules.parallelMoveLimit) {
+        mutableStateOf(state.lobbyRules.parallelMoveLimit.toString())
+    }
+
+    fun emitRules() {
+        val current = state.lobbyRules
+        val rules = GameRules(
+            gameMode = gameMode,
+            meeplesPerPlayer = meeplesText.toIntOrNull() ?: current.meeplesPerPlayer,
+            smallCityTwoTilesFourPoints = smallCityFourPoints,
+            randomizedMode = gameMode == GameMode.RANDOM,
+            randomizedMoveLimit = randomizedMovesText.toIntOrNull() ?: current.randomizedMoveLimit,
+            previewEnabled = if (gameMode == GameMode.PARALLEL) false else previewEnabled,
+            previewCount = previewCountText.toIntOrNull() ?: current.previewCount,
+            parallelSelectionSize = parallelSelectionText.toIntOrNull() ?: current.parallelSelectionSize,
+            parallelMoveLimit = parallelMovesText.toIntOrNull() ?: current.parallelMoveLimit,
+        )
+        onApplyGameRules(rules)
     }
 
     Column(
@@ -243,104 +271,102 @@ private fun LobbyScreen(
                     onValueChange = { raw ->
                         val next = raw.filter { c -> c.isDigit() }.take(2)
                         meeplesText = next
-                        onApplyGameRules(
-                            next,
-                            smallCityFourPoints,
-                            randomizedMode,
-                            randomizedMovesText,
-                            previewEnabled,
-                            previewCountText,
-                        )
+                        emitRules()
                     },
                     label = { Text("Meeples per player") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Text("Mode", fontWeight = FontWeight.Medium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val modes = listOf(
+                        GameMode.STANDARD to "Standard",
+                        GameMode.RANDOM to "Random",
+                        GameMode.PARALLEL to "Parallel",
+                    )
+                    modes.forEach { (mode, label) ->
+                        if (gameMode == mode) {
+                            Button(onClick = {}) { Text(label) }
+                        } else {
+                            OutlinedButton(
+                                onClick = {
+                                    gameMode = mode
+                                    emitRules()
+                                },
+                            ) {
+                                Text(label)
+                            }
+                        }
+                    }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(
                         checked = smallCityFourPoints,
                         onCheckedChange = { checked ->
                             smallCityFourPoints = checked
-                            onApplyGameRules(
-                                meeplesText,
-                                checked,
-                                randomizedMode,
-                                randomizedMovesText,
-                                previewEnabled,
-                                previewCountText,
-                            )
+                            emitRules()
                         },
                     )
                     Text("2-tile city = 4 points (off => 2 points)")
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(
-                        checked = randomizedMode,
-                        onCheckedChange = { checked ->
-                            randomizedMode = checked
-                            onApplyGameRules(
-                                meeplesText,
-                                smallCityFourPoints,
-                                checked,
-                                randomizedMovesText,
-                                previewEnabled,
-                                previewCountText,
-                            )
-                        },
-                    )
-                    Text("Randomized game mode")
-                }
-                if (randomizedMode) {
+
+                if (gameMode == GameMode.RANDOM) {
                     OutlinedTextField(
                         value = randomizedMovesText,
                         onValueChange = { raw ->
                             val next = raw.filter { c -> c.isDigit() }.take(3)
                             randomizedMovesText = next
-                            onApplyGameRules(
-                                meeplesText,
-                                smallCityFourPoints,
-                                randomizedMode,
-                                next,
-                                previewEnabled,
-                                previewCountText,
-                            )
+                            emitRules()
                         },
                         label = { Text("Move limit") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(
-                        checked = previewEnabled,
-                        onCheckedChange = { checked ->
-                            previewEnabled = checked
-                            onApplyGameRules(
-                                meeplesText,
-                                smallCityFourPoints,
-                                randomizedMode,
-                                randomizedMovesText,
-                                checked,
-                                previewCountText,
-                            )
+
+                if (gameMode == GameMode.PARALLEL) {
+                    OutlinedTextField(
+                        value = parallelSelectionText,
+                        onValueChange = { raw ->
+                            val next = raw.filter { c -> c.isDigit() }.take(1)
+                            parallelSelectionText = next
+                            emitRules()
                         },
+                        label = { Text("Tile choices per round (1-6)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
                     )
-                    Text("Preview upcoming tiles")
+                    OutlinedTextField(
+                        value = parallelMovesText,
+                        onValueChange = { raw ->
+                            val next = raw.filter { c -> c.isDigit() }.take(3)
+                            parallelMovesText = next
+                            emitRules()
+                        },
+                        label = { Text("Parallel rounds") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = previewEnabled,
+                            onCheckedChange = { checked ->
+                                previewEnabled = checked
+                                emitRules()
+                            },
+                        )
+                        Text("Preview upcoming tiles")
+                    }
                 }
-                if (previewEnabled) {
+
+                if (gameMode != GameMode.PARALLEL && previewEnabled) {
                     OutlinedTextField(
                         value = previewCountText,
                         onValueChange = { raw ->
                             val next = raw.filter { c -> c.isDigit() }.take(2)
                             previewCountText = next
-                            onApplyGameRules(
-                                meeplesText,
-                                smallCityFourPoints,
-                                randomizedMode,
-                                randomizedMovesText,
-                                previewEnabled,
-                                next,
-                            )
+                            emitRules()
                         },
                         label = { Text("Preview tile count (N)") },
                         singleLine = true,
@@ -459,14 +485,14 @@ private fun HostCardView(
 }
 
 private fun gameRulesSummary(rules: GameRules): String {
-    val cityText = if (rules.smallCityTwoTilesFourPoints) "2-tile city=4" else "2-tile city=2"
-    val randomText = if (rules.randomizedMode) {
-        "random ${rules.randomizedMoveLimit} moves"
-    } else {
-        "classic deck"
+    val mode = when (rules.gameMode) {
+        GameMode.STANDARD -> "standard"
+        GameMode.RANDOM -> "random ${rules.randomizedMoveLimit} moves"
+        GameMode.PARALLEL -> "parallel ${rules.parallelMoveLimit} rounds, picks ${rules.parallelSelectionSize}"
     }
+    val cityText = if (rules.smallCityTwoTilesFourPoints) "2-tile city=4" else "2-tile city=2"
     val previewText = if (rules.previewEnabled) "preview ${rules.previewCount}" else "preview off"
-    return "meeples ${rules.meeplesPerPlayer}, $cityText, $randomText, $previewText"
+    return "meeples ${rules.meeplesPerPlayer}, $cityText, $mode, $previewText"
 }
 
 @Composable
@@ -481,6 +507,8 @@ private fun MatchScreen(
     onConfirmPlacement: () -> Unit,
     onRevertPlacement: () -> Unit,
     onSelectScoreGroup: (String?) -> Unit,
+    onPickParallelTile: (Int) -> Unit,
+    onResolveParallelConflict: (String) -> Unit,
     onDisconnect: () -> Unit,
 ) {
     val match = state.match
@@ -508,25 +536,88 @@ private fun MatchScreen(
 
     val p1 = match.players[1]
     val p2 = match.players[2]
+    val isParallel = match.rules.gameMode == GameMode.PARALLEL
+    val parallelRound = match.parallelRound
     val remainingTiles = match.remaining.values.sumOf { it.coerceAtLeast(0) }
-    val randomizedMode = match.rules.randomizedMode
+    val randomizedMode = match.rules.gameMode == GameMode.RANDOM
     val remainingMoves = if (match.status == MatchStatus.ACTIVE) {
         (match.rules.randomizedMoveLimit - (match.turnState.turnIndex - 1)).coerceAtLeast(0)
     } else {
         0
     }
-    val counterLabel = if (randomizedMode) "Moves" else "Tiles"
-    val counterValue = if (randomizedMode) remainingMoves else remainingTiles
+    val remainingRounds = if (isParallel && match.status == MatchStatus.ACTIVE) {
+        ((parallelRound?.moveLimit ?: match.rules.parallelMoveLimit) - (parallelRound?.roundIndex ?: 1) + 1).coerceAtLeast(0)
+    } else {
+        0
+    }
+    val counterLabel = when {
+        isParallel -> "Rounds"
+        randomizedMode -> "Moves"
+        else -> "Tiles"
+    }
+    val counterValue = when {
+        isParallel -> remainingRounds
+        randomizedMode -> remainingMoves
+        else -> remainingTiles
+    }
     val previewTiles = buildPreviewTiles(
         match = match,
         requested = match.rules.previewCount,
-        enabled = match.rules.previewEnabled,
+        enabled = match.rules.previewEnabled && !isParallel,
     )
     val p1Meeples = match.meeplesAvailable[1] ?: 0
     val p2Meeples = match.meeplesAvailable[2] ?: 0
     var topPanelExpanded by rememberSaveable { mutableStateOf(true) }
     var scorePanelExpanded by rememberSaveable { mutableStateOf(false) }
     var previewPanelExpanded by rememberSaveable(match.id) { mutableStateOf(true) }
+    var centerOverlayMessage by rememberSaveable(match.id) { mutableStateOf<String?>(null) }
+    var repositionOverlayShownRound by rememberSaveable(match.id) { mutableStateOf(-1) }
+
+    val placementStamp = parallelRound?.placementDoneAtEpochMs ?: 0L
+    LaunchedEffect(placementStamp) {
+        if (placementStamp > 0L) {
+            val message = "Placement done"
+            centerOverlayMessage = message
+            delay(1_000L)
+            if (centerOverlayMessage == message) {
+                centerOverlayMessage = null
+            }
+        }
+    }
+    val shouldShowRepositionOverlay = run {
+        if (!isParallel || parallelRound?.phase != ParallelPhase.PLACE) {
+            false
+        } else {
+            val me = parallelRound.players[viewerPlayer]
+            val othersLocked = parallelRound.players.any { (player, playerState) ->
+                player != viewerPlayer && playerState.tileLocked && playerState.intent != null
+            }
+            me != null &&
+                !me.pickedTileId.isNullOrBlank() &&
+                !me.tileLocked &&
+                othersLocked &&
+                match.lastEvent.contains("must place in another place", ignoreCase = true)
+        }
+    }
+    val currentRoundIndex = parallelRound?.roundIndex ?: -1
+    LaunchedEffect(shouldShowRepositionOverlay, currentRoundIndex, parallelRound?.phase) {
+        if (!shouldShowRepositionOverlay) {
+            if (parallelRound?.phase != ParallelPhase.PLACE) {
+                repositionOverlayShownRound = -1
+            }
+            return@LaunchedEffect
+        }
+        if (repositionOverlayShownRound == currentRoundIndex) {
+            return@LaunchedEffect
+        }
+        val message = "Place tile in another location"
+        centerOverlayMessage = message
+        repositionOverlayShownRound = currentRoundIndex
+        delay(1_100L)
+        if (centerOverlayMessage == message) {
+            centerOverlayMessage = null
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -609,7 +700,11 @@ private fun MatchScreen(
                         )
                         Text(
                             text = if (match.status == MatchStatus.ACTIVE) {
-                                "Turn ${match.turnState.turnIndex}: P${match.turnState.player} | tile ${match.turnState.tileId ?: "-"}"
+                                if (isParallel && parallelRound != null) {
+                                    "Round ${parallelRound.roundIndex}/${parallelRound.moveLimit} | ${parallelRound.phase.name.lowercase()}"
+                                } else {
+                                    "Turn ${match.turnState.turnIndex}: P${match.turnState.player} | tile ${match.turnState.tileId ?: "-"}"
+                                }
                             } else {
                                 "Match status: ${match.status.name}"
                             },
@@ -618,6 +713,32 @@ private fun MatchScreen(
                         Text(
                             text = if (session == null) {
                                 "Disconnected. Inspect mode only. Open Lobby to reconnect."
+                            } else if (isParallel && parallelRound != null) {
+                                when (parallelRound.phase) {
+                                    ParallelPhase.PICK -> if (state.canAct) {
+                                        "Pick one tile from the strip."
+                                    } else {
+                                        "Waiting for opponent to pick."
+                                    }
+
+                                    ParallelPhase.PLACE -> if (state.canAct) {
+                                        "Tap to move/rotate. Long-press to lock placement."
+                                    } else {
+                                        "Waiting for opponent to lock placement."
+                                    }
+
+                                    ParallelPhase.RESOLVE -> if (parallelRound.conflict?.tokenHolder == viewerPlayer) {
+                                        "Conflict: choose Retreat or Burn Token."
+                                    } else {
+                                        "Waiting for priority token decision."
+                                    }
+
+                                    ParallelPhase.MEEPLE -> if (state.canAct) {
+                                        "Select meeple on your committed tile and confirm."
+                                    } else {
+                                        "Waiting for opponent meeple confirmation."
+                                    }
+                                }
                             } else if (state.canAct) {
                                 "Tap to place/rotate. Invalid spots stay visible with a cross. Long-press to lock."
                             } else {
@@ -643,8 +764,43 @@ private fun MatchScreen(
                 p2Meeples = p2Meeples,
                 counterLabel = counterLabel,
                 counterValue = counterValue,
+                priorityTokenPlayer = match.priorityTokenPlayer,
             )
-            if (match.rules.previewEnabled) {
+            if (isParallel && parallelRound != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp, end = 2.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    PanelToggleButton(
+                        expanded = previewPanelExpanded,
+                        expandWhenCollapsedUp = false,
+                        contentDescription = if (previewPanelExpanded) "Hide tile picks" else "Show tile picks",
+                        onToggle = { previewPanelExpanded = !previewPanelExpanded },
+                    )
+                }
+                if (previewPanelExpanded) {
+                    Spacer(modifier = Modifier.height(3.dp))
+                    ParallelPickStrip(
+                        round = parallelRound,
+                        viewerPlayer = viewerPlayer,
+                        canAct = state.canAct,
+                        simplifiedView = state.settings.simplifiedView,
+                        tileVisuals = state.tileVisuals,
+                        maxHeightPercent = state.settings.previewPaneHeightPercent,
+                        onPick = onPickParallelTile,
+                    )
+                }
+                if (parallelRound.phase == ParallelPhase.RESOLVE) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    ParallelConflictControls(
+                        round = parallelRound,
+                        viewerPlayer = viewerPlayer,
+                        onResolve = onResolveParallelConflict,
+                    )
+                }
+            } else if (match.rules.previewEnabled) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -709,6 +865,24 @@ private fun MatchScreen(
         if (match.status == MatchStatus.FINISHED) {
             Box(modifier = Modifier.align(Alignment.Center)) {
                 WinnerBanner(match = match)
+            }
+        }
+
+        if (!centerOverlayMessage.isNullOrBlank() && isParallel) {
+            Box(modifier = Modifier.align(Alignment.Center)) {
+                Surface(
+                    color = Color(0xC8FFFFFF),
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp,
+                ) {
+                    Text(
+                        text = centerOverlayMessage ?: "",
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF1E1E1E),
+                    )
+                }
             }
         }
     }
@@ -940,6 +1114,7 @@ private fun MatchResourceStrip(
     p2Meeples: Int,
     counterLabel: String,
     counterValue: Int,
+    priorityTokenPlayer: Int?,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -955,6 +1130,15 @@ private fun MatchResourceStrip(
             color = Color(0xFFD53E3E),
             count = p2Meeples,
         )
+        if (priorityTokenPlayer == 1 || priorityTokenPlayer == 2) {
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = "★",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Bold,
+                color = if (priorityTokenPlayer == 1) Color(0xFF2B6BE1) else Color(0xFFD53E3E),
+            )
+        }
         Spacer(modifier = Modifier.width(18.dp))
         TileCounterSquare(label = counterLabel, count = counterValue)
     }
@@ -964,7 +1148,7 @@ private fun buildPreviewTiles(match: MatchState, requested: Int, enabled: Boolea
     if (!enabled || requested <= 0) return emptyList()
     if (match.status != MatchStatus.ACTIVE) return emptyList()
 
-    val available = if (match.rules.randomizedMode) {
+    val available = if (match.rules.gameMode == GameMode.RANDOM) {
         (match.rules.randomizedMoveLimit - match.turnState.turnIndex).coerceAtLeast(0)
     } else {
         match.remaining.values.sumOf { it.coerceAtLeast(0) }
@@ -983,6 +1167,159 @@ private fun buildPreviewTiles(match: MatchState, requested: Int, enabled: Boolea
 
     val maxCount = minOf(requested, available, out.size)
     return out.take(maxCount)
+}
+
+@Composable
+private fun ParallelPickStrip(
+    round: ParallelRoundState,
+    viewerPlayer: Int,
+    canAct: Boolean,
+    simplifiedView: Boolean,
+    tileVisuals: Map<String, TileVisualState>,
+    maxHeightPercent: Int,
+    onPick: (Int) -> Unit,
+) {
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val clampedPercent = maxHeightPercent.coerceIn(6, 35)
+    val maxStripHeight = (screenHeight * (clampedPercent / 100f)).coerceAtLeast(34.dp)
+    val tileCache = rememberPreviewTileBitmapCache()
+    val viewerPick = round.players[viewerPlayer]?.pickIndex
+    val opponentPick = round.players.entries.firstOrNull { it.key != viewerPlayer }?.value?.pickIndex
+    val canPickNow = canAct && (
+        round.phase == ParallelPhase.PICK ||
+            (round.phase == ParallelPhase.PLACE && round.players[viewerPlayer]?.tileLocked != true)
+        )
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 6.dp),
+        color = Color(0x92FFFFFF),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 30.dp, max = maxStripHeight)
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+        ) {
+            val slots = round.selection.size.coerceAtLeast(1)
+            val spacing = 4.dp
+            val usableWidth = (maxWidth - spacing * (slots - 1)).coerceAtLeast(20.dp)
+            val byWidth = usableWidth / slots
+            val byHeight = (maxHeight - 2.dp).coerceAtLeast(20.dp)
+            val tileSize = if (byWidth < byHeight) byWidth else byHeight
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(spacing),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                round.selection.forEachIndexed { idx, tileId ->
+                    val viewerSelected = viewerPick == idx
+                    val opponentSelected = opponentPick == idx
+                    val bothSelected = viewerSelected && opponentSelected
+                    Box(
+                        modifier = Modifier
+                            .size(tileSize)
+                            .then(
+                                if (canPickNow) {
+                                    Modifier.clickable { onPick(idx) }
+                                } else {
+                                    Modifier
+                                }
+                            ),
+                    ) {
+                        UpcomingTileThumb(
+                            tileId = tileId,
+                            tileSize = tileSize,
+                            tileCache = tileCache,
+                            simplifiedView = simplifiedView,
+                            tileVisual = tileVisuals[tileId],
+                        )
+                        if (viewerSelected) {
+                            DashedPickBorder(
+                                color = Color(0xFF2B6BE1),
+                                widthDp = 5.2f,
+                                insetDp = if (bothSelected) 4f else 3f,
+                            )
+                        }
+                        if (opponentSelected) {
+                            DashedPickBorder(
+                                color = Color(0xFFD53E3E),
+                                widthDp = 5.2f,
+                                insetDp = if (bothSelected) 11f else 3f,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DashedPickBorder(
+    color: Color,
+    widthDp: Float,
+    insetDp: Float,
+) {
+    Canvas(modifier = Modifier.fillMaxSize().padding(insetDp.dp)) {
+        drawRect(
+            color = color,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                width = widthDp,
+                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                    intervals = floatArrayOf(14f, 8f),
+                    phase = 0f,
+                ),
+            ),
+        )
+    }
+}
+
+@Composable
+private fun ParallelConflictControls(
+    round: ParallelRoundState,
+    viewerPlayer: Int,
+    onResolve: (String) -> Unit,
+) {
+    val conflict = round.conflict ?: return
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp),
+        color = Color(0xA8FFFFFF),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(
+                text = conflict.message,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
+            )
+            if (conflict.tokenHolder == viewerPlayer) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onResolve("retreat") }) {
+                        Text("Retreat")
+                    }
+                    OutlinedButton(onClick = { onResolve("burn") }) {
+                        Text("Burn Token")
+                    }
+                }
+            } else {
+                Text(
+                    text = "Waiting for priority token holder decision...",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
 }
 
 @Composable

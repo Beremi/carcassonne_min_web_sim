@@ -49,6 +49,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import com.carcassonne.lan.model.GameMode
 import com.carcassonne.lan.model.MatchState
 import kotlin.math.PI
 import kotlin.math.cos
@@ -147,10 +148,19 @@ fun BoardView(
             val cellPx = BASE_CELL_PX * zoom
             val center = Offset(size.width / 2f + pan.x, size.height / 2f + pan.y)
             val activeColor = playerColor(activePlayer)
-            val remoteIntent = match.turnState.intent?.takeIf { intent ->
-                viewerPlayer != null &&
-                    intent.player != viewerPlayer &&
-                    intent.tileId.isNotBlank()
+            val remoteIntent = if (match.rules.gameMode == GameMode.PARALLEL) {
+                match.parallelIntents.values
+                    .firstOrNull { intent ->
+                        viewerPlayer != null &&
+                            intent.player != viewerPlayer &&
+                            intent.tileId.isNotBlank()
+                    }
+            } else {
+                match.turnState.intent?.takeIf { intent ->
+                    viewerPlayer != null &&
+                        intent.player != viewerPlayer &&
+                        intent.tileId.isNotBlank()
+                }
             }
 
             fun cellTopLeft(x: Int, y: Int): Offset {
@@ -330,6 +340,11 @@ fun BoardView(
                 val topLeft = cellTopLeft(remoteIntent.x, remoteIntent.y)
                 val image = tileCache.get(remoteIntent.tileId)
                 val intentColor = playerColor(remoteIntent.player)
+                val remoteAlpha = if (match.rules.gameMode == GameMode.PARALLEL) {
+                    if (remoteIntent.locked) 0.62f else 0.48f
+                } else {
+                    if (remoteIntent.locked) 0.90f else 0.68f
+                }
                 withTransform({
                     translate(topLeft.x, topLeft.y)
                     rotate(remoteIntent.rotDeg.toFloat(), pivot = Offset(cellPx / 2f, cellPx / 2f))
@@ -341,13 +356,13 @@ fun BoardView(
                             srcSize = IntSize(image.width, image.height),
                             dstOffset = IntOffset(0, 0),
                             dstSize = IntSize(cellPx.roundToInt(), cellPx.roundToInt()),
-                            alpha = if (remoteIntent.locked) 0.90f else 0.68f,
+                            alpha = remoteAlpha,
                         )
                     } else {
                         drawSimplifiedTile(
                             sizePx = cellPx,
                             tile = tileVisuals[remoteIntent.tileId],
-                            alpha = if (remoteIntent.locked) 0.90f else 0.70f,
+                            alpha = remoteAlpha,
                         )
                     }
                 }
@@ -390,9 +405,16 @@ fun BoardView(
             if (preview != null && lockedPlacement == null) {
                 val topLeft = cellTopLeft(preview.x, preview.y)
                 val image = tileCache.get(preview.tileId)
-                val previewColor = if (preview.isUpcomingGhost) playerColor(viewerPlayer) else activeColor
+                val previewColor = if (match.rules.gameMode == GameMode.PARALLEL) {
+                    playerColor(viewerPlayer)
+                } else if (preview.isUpcomingGhost) {
+                    playerColor(viewerPlayer)
+                } else {
+                    activeColor
+                }
                 val previewAlpha = when {
                     preview.isUpcomingGhost -> 0.42f
+                    match.rules.gameMode == GameMode.PARALLEL -> if (preview.legal) 1f else 0.88f
                     preview.legal -> 0.70f
                     else -> 0.35f
                 }
@@ -450,6 +472,11 @@ fun BoardView(
             if (lockedPlacement != null) {
                 val topLeft = cellTopLeft(lockedPlacement.x, lockedPlacement.y)
                 val image = tileCache.get(lockedPlacement.tileId)
+                val lockedColor = if (match.rules.gameMode == GameMode.PARALLEL) {
+                    playerColor(viewerPlayer)
+                } else {
+                    activeColor
+                }
 
                 withTransform({
                     translate(topLeft.x, topLeft.y)
@@ -476,7 +503,7 @@ fun BoardView(
                 drawInsetTileBorder(
                     topLeft = topLeft,
                     sizePx = cellPx,
-                    color = activeColor,
+                    color = lockedColor,
                     width = 10f,
                     dashed = false,
                 )
@@ -493,7 +520,7 @@ fun BoardView(
                     )
                     val selected = lockedPlacement.selectedMeepleFeatureId == option.featureId
                     drawCircle(
-                        color = if (selected) Color(0xFFFFC107) else activeColor,
+                        color = if (selected) Color(0xFFFFC107) else lockedColor,
                         radius = markerR,
                         center = pt,
                     )

@@ -55,13 +55,70 @@ data class TurnIntentState(
 )
 
 @Serializable
+enum class GameMode {
+    STANDARD,
+    RANDOM,
+    PARALLEL,
+}
+
+@Serializable
+enum class ParallelPhase {
+    PICK,
+    PLACE,
+    RESOLVE,
+    MEEPLE,
+}
+
+@Serializable
+enum class ParallelConflictType {
+    SAME_CELL,
+    EDGE_MISMATCH,
+}
+
+@Serializable
+data class ParallelConflictState(
+    val type: ParallelConflictType,
+    val tokenHolder: Int,
+    val fixedPlayer: Int,
+    val replacerPlayer: Int,
+    val message: String,
+)
+
+@Serializable
+data class ParallelPlayerRoundState(
+    val pickIndex: Int? = null,
+    val pickedTileId: String? = null,
+    val intent: TurnIntentState? = null,
+    val tileLocked: Boolean = false,
+    val committedCellKey: String? = null,
+    val committedRotDeg: Int? = null,
+    val committedInstId: Int? = null,
+    val meepleFeatureId: String? = null,
+    val meepleConfirmed: Boolean = false,
+)
+
+@Serializable
+data class ParallelRoundState(
+    val roundIndex: Int = 1,
+    val moveLimit: Int = 36,
+    val selection: List<String> = emptyList(),
+    val phase: ParallelPhase = ParallelPhase.PICK,
+    val players: Map<Int, ParallelPlayerRoundState> = emptyMap(),
+    val conflict: ParallelConflictState? = null,
+    val placementDoneAtEpochMs: Long = 0L,
+)
+
+@Serializable
 data class GameRules(
+    val gameMode: GameMode = GameMode.STANDARD,
     val meeplesPerPlayer: Int = 7,
     val smallCityTwoTilesFourPoints: Boolean = true,
     val randomizedMode: Boolean = false,
     val randomizedMoveLimit: Int = 72,
     val previewEnabled: Boolean = false,
     val previewCount: Int = 4,
+    val parallelSelectionSize: Int = 3,
+    val parallelMoveLimit: Int = 36,
 )
 
 @Serializable
@@ -80,6 +137,9 @@ data class MatchState(
     val turnState: TurnState = TurnState(player = 1),
     val nextTiles: Map<Int, String?> = mapOf(1 to null, 2 to null),
     val drawQueue: List<String> = emptyList(),
+    val priorityTokenPlayer: Int? = null,
+    val parallelRound: ParallelRoundState? = null,
+    val parallelIntents: Map<Int, TurnIntentState> = emptyMap(),
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long,
     val lastEvent: String = "",

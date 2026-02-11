@@ -1,7 +1,9 @@
 package com.carcassonne.lan
 
 import com.carcassonne.lan.core.CarcassonneEngine
+import com.carcassonne.lan.model.GameMode
 import com.carcassonne.lan.model.GameRules
+import com.carcassonne.lan.model.ParallelPhase
 import com.carcassonne.lan.model.TileDef
 import com.carcassonne.lan.model.TileEdge
 import com.carcassonne.lan.model.TileFeature
@@ -207,5 +209,149 @@ class HostGameManagerTest {
         val randomSnap = manager.snapshot()
         assertTrue(randomSnap.rules.randomizedMode)
         assertTrue(randomSnap.drawQueue.isNotEmpty())
+    }
+
+    @Test
+    fun parallelConflictResolutionKeepsTokenOnRetreat() {
+        val engine = CarcassonneEngine(simpleTileset())
+        val manager = HostGameManager(engine = engine, random = Random(23), nowMs = { 6000L })
+        val hostToken = manager.configureHostPlayer("Host1000")
+        val configured = manager.configureGameRules(
+            GameRules(
+                gameMode = GameMode.PARALLEL,
+                parallelSelectionSize = 2,
+                parallelMoveLimit = 3,
+            )
+        )
+        assertTrue(configured.ok)
+
+        val inviteId = manager.sendInvite("Remote2000").inviteId.orEmpty()
+        manager.respondInvite(inviteId, "accept")
+        val join = manager.joinOrReconnect("Remote2000")
+        assertTrue(join.ok)
+        val remoteToken = join.token.orEmpty()
+        assertTrue(remoteToken.isNotBlank())
+
+        val pickHost = manager.parallelPickTile(hostToken, pickIndex = 0)
+        val pickRemote = manager.parallelPickTile(remoteToken, pickIndex = 0)
+        assertTrue(pickHost.ok)
+        assertTrue(pickRemote.ok)
+
+        val afterPick = manager.snapshot()
+        assertEquals(ParallelPhase.PLACE, afterPick.parallelRound?.phase)
+        val hostIntent = afterPick.parallelRound?.players?.get(1)?.intent
+        val remoteIntent = afterPick.parallelRound?.players?.get(2)?.intent
+        assertNotNull(hostIntent)
+        assertNotNull(remoteIntent)
+
+        val lockHost = manager.publishTurnIntent(
+            token = hostToken,
+            x = hostIntent!!.x,
+            y = hostIntent.y,
+            rotDeg = hostIntent.rotDeg,
+            meepleFeatureId = null,
+            locked = true,
+        )
+        val lockRemote = manager.publishTurnIntent(
+            token = remoteToken,
+            x = remoteIntent!!.x,
+            y = remoteIntent.y,
+            rotDeg = remoteIntent.rotDeg,
+            meepleFeatureId = null,
+            locked = true,
+        )
+        assertTrue(lockHost.ok)
+        assertTrue(lockRemote.ok)
+
+        val conflictSnap = manager.snapshot()
+        assertEquals(ParallelPhase.RESOLVE, conflictSnap.parallelRound?.phase)
+        val tokenHolder = conflictSnap.parallelRound?.conflict?.tokenHolder
+        assertNotNull(tokenHolder)
+        val holderToken = if (tokenHolder == 1) hostToken else remoteToken
+
+        val resolve = manager.parallelResolveConflict(holderToken, "retreat")
+        assertTrue(resolve.ok)
+        val resolved = resolve.match ?: error("match missing")
+        assertEquals(ParallelPhase.PLACE, resolved.parallelRound?.phase)
+        assertEquals(tokenHolder, resolved.priorityTokenPlayer)
+        val replacerState = resolved.parallelRound?.players?.get(tokenHolder!!)
+        assertNull(replacerState?.pickedTileId)
+        assertFalse(replacerState?.tileLocked ?: true)
+    }
+
+    @Test
+    fun parallelMeeplePlacementAllowsBothPlayersOnSharedOpenFeature() {
+        val engine = CarcassonneEngine(simpleTileset())
+        val manager = HostGameManager(engine = engine, random = Random(29), nowMs = { 7000L })
+        val hostToken = manager.configureHostPlayer("Host1000")
+        val configured = manager.configureGameRules(
+            GameRules(
+                gameMode = GameMode.PARALLEL,
+                parallelSelectionSize = 3,
+                parallelMoveLimit = 1,
+                meeplesPerPlayer = 7,
+            )
+        )
+        assertTrue(configured.ok)
+
+        val inviteId = manager.sendInvite("Remote2000").inviteId.orEmpty()
+        manager.respondInvite(inviteId, "accept")
+        val join = manager.joinOrReconnect("Remote2000")
+        assertTrue(join.ok)
+        val remoteToken = join.token.orEmpty()
+
+        assertTrue(manager.parallelPickTile(hostToken, 0).ok)
+        assertTrue(manager.parallelPickTile(remoteToken, 1).ok)
+
+        // Force non-conflicting placements for this test round.
+        assertTrue(
+            manager.publishTurnIntent(
+                token = hostToken,
+                x = 1,
+                y = 0,
+                rotDeg = 0,
+                meepleFeatureId = null,
+                locked = true,
+            ).ok
+        )
+        assertTrue(
+            manager.publishTurnIntent(
+                token = remoteToken,
+                x = -1,
+                y = 0,
+                rotDeg = 0,
+                meepleFeatureId = null,
+                locked = true,
+            ).ok
+        )
+
+        val afterLock = manager.snapshot()
+        assertEquals(ParallelPhase.MEEPLE, afterLock.parallelRound?.phase)
+
+        val p1Meeple = manager.submitTurn(
+            token = hostToken,
+            x = 0,
+            y = 0,
+            rotDeg = 0,
+            meepleFeatureId = "field1",
+        )
+        assertTrue(p1Meeple.ok)
+        val p2Meeple = manager.submitTurn(
+            token = remoteToken,
+            x = 0,
+            y = 0,
+            rotDeg = 0,
+            meepleFeatureId = "field1",
+        )
+        assertTrue(p2Meeple.ok)
+
+        val finalMatch = p2Meeple.match ?: error("match missing")
+        assertEquals("FINISHED", finalMatch.status.name)
+        assertEquals(6, finalMatch.meeplesAvailable[1])
+        assertEquals(6, finalMatch.meeplesAvailable[2])
+        val allMeeples = finalMatch.board.values.flatMap { it.meeples }
+        assertEquals(2, allMeeples.size)
+        assertTrue(allMeeples.any { it.player == 1 })
+        assertTrue(allMeeples.any { it.player == 2 })
     }
 }

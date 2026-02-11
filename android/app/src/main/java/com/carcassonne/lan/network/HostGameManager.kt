@@ -4,6 +4,7 @@ import com.carcassonne.lan.core.CarcassonneEngine
 import com.carcassonne.lan.data.NameGenerator
 import com.carcassonne.lan.model.GenericOkResponse
 import com.carcassonne.lan.model.AreaScoreHistoryEntry
+import com.carcassonne.lan.model.GameMode
 import com.carcassonne.lan.model.GameRules
 import com.carcassonne.lan.model.InviteListItem
 import com.carcassonne.lan.model.InviteListResponse
@@ -15,6 +16,11 @@ import com.carcassonne.lan.model.MatchStatus
 import com.carcassonne.lan.model.MeeplePlacement
 import com.carcassonne.lan.model.PingResponse
 import com.carcassonne.lan.model.PlacedTile
+import com.carcassonne.lan.model.ParallelConflictState
+import com.carcassonne.lan.model.ParallelConflictType
+import com.carcassonne.lan.model.ParallelPhase
+import com.carcassonne.lan.model.ParallelPlayerRoundState
+import com.carcassonne.lan.model.ParallelRoundState
 import com.carcassonne.lan.model.PlayerSlot
 import com.carcassonne.lan.model.PlayerSummary
 import com.carcassonne.lan.model.PollResponse
@@ -56,6 +62,12 @@ class HostGameManager(
     private var soloMode: Boolean = false
     private val invitesById = linkedMapOf<String, InviteRecord>()
     private val acceptedInviteNames = linkedSetOf<String>()
+
+    private fun modeOf(rules: GameRules = match.rules): GameMode = rules.gameMode
+
+    private fun isParallelMode(rules: GameRules = match.rules): Boolean = modeOf(rules) == GameMode.PARALLEL
+
+    private fun isRandomizedMode(rules: GameRules = match.rules): Boolean = modeOf(rules) == GameMode.RANDOM
 
     fun configureHostPlayer(nameInput: String): String = synchronized(lock) {
         hostName = NameGenerator.ensureNumericSuffix(nameInput, random)
@@ -101,6 +113,21 @@ class HostGameManager(
                     rules = lobbyRules,
                     meeplesAvailable = normalizedMeeples,
                     drawQueue = normalizedDrawQueue,
+                    priorityTokenPlayer = if (lobbyRules.gameMode == GameMode.PARALLEL) {
+                        restored.priorityTokenPlayer ?: listOf(1, 2).random(random)
+                    } else {
+                        null
+                    },
+                    parallelRound = if (lobbyRules.gameMode == GameMode.PARALLEL) {
+                        normalizeParallelRound(restored.parallelRound, restored, lobbyRules)
+                    } else {
+                        null
+                    },
+                    parallelIntents = if (lobbyRules.gameMode == GameMode.PARALLEL) {
+                        restored.parallelIntents
+                    } else {
+                        emptyMap()
+                    },
                 )
             nextMatchId = extractNextMatchId(saved.id)
             val p1 = saved.players[1]
@@ -109,6 +136,9 @@ class HostGameManager(
                 hostToken = p1.token
             }
             soloMode = restored.status == MatchStatus.ACTIVE && restored.players[2] == null
+            if (match.status == MatchStatus.ACTIVE && isParallelMode() && match.parallelRound == null) {
+                startParallelRoundLocked(roundIndex = 1)
+            }
             cleanupDisconnectedOpponentLocked()
         }
     }
@@ -147,7 +177,16 @@ class HostGameManager(
                 name = requested,
             )
             if (existingByName.player == 1) hostToken = freshToken
-            match = match.copy(players = players, updatedAtEpochMs = nowMs())
+            var updatedMatch = match.copy(players = players, updatedAtEpochMs = nowMs())
+            if (updatedMatch.rules.gameMode == GameMode.PARALLEL) {
+                val round = updatedMatch.parallelRound
+                if (round != null && existingByName.player !in round.players.keys) {
+                    val roundPlayers = round.players.toMutableMap()
+                    roundPlayers[existingByName.player] = ParallelPlayerRoundState()
+                    updatedMatch = updatedMatch.copy(parallelRound = round.copy(players = roundPlayers))
+                }
+            }
+            match = updatedMatch
             return JoinResponse(ok = true, token = freshToken, player = existingByName.player, match = match)
         }
 
@@ -181,12 +220,23 @@ class HostGameManager(
         match = match.copy(players = players, status = MatchStatus.ACTIVE, updatedAtEpochMs = nowMs())
         soloMode = false
         consumeInviteForNameLocked(requested)
-        ensureNextTiles()
-        drawPlaceableTileForTurn()
-        match = match.copy(
-            lastEvent = "Match started: ${players[1]?.name ?: "Host"} vs $requested",
-            updatedAtEpochMs = nowMs(),
-        )
+        if (isParallelMode()) {
+            if (match.priorityTokenPlayer == null) {
+                match = match.copy(priorityTokenPlayer = listOf(1, 2).random(random))
+            }
+            startParallelRoundLocked(roundIndex = 1)
+            match = match.copy(
+                lastEvent = "Parallel match started: ${players[1]?.name ?: "Host"} vs $requested",
+                updatedAtEpochMs = nowMs(),
+            )
+        } else {
+            ensureNextTiles()
+            drawPlaceableTileForTurn()
+            match = match.copy(
+                lastEvent = "Match started: ${players[1]?.name ?: "Host"} vs $requested",
+                updatedAtEpochMs = nowMs(),
+            )
+        }
         JoinResponse(ok = true, token = joinToken, player = 2, match = match)
     }
 
@@ -224,8 +274,15 @@ class HostGameManager(
         soloMode = true
         invitesById.clear()
         acceptedInviteNames.clear()
-        ensureNextTiles()
-        drawPlaceableTileForTurn()
+        if (isParallelMode()) {
+            if (match.priorityTokenPlayer == null) {
+                match = match.copy(priorityTokenPlayer = 1)
+            }
+            startParallelRoundLocked(roundIndex = 1)
+        } else {
+            ensureNextTiles()
+            drawPlaceableTileForTurn()
+        }
         return GenericOkResponse(ok = true)
     }
 
@@ -391,7 +448,11 @@ class HostGameManager(
         val slot = playerByToken(token)
             ?: return@synchronized PollResponse(ok = false, error = "Invalid session token.")
 
-        val canAct = match.status == MatchStatus.ACTIVE && slot.player == match.turnState.player
+        val canAct = when {
+            match.status != MatchStatus.ACTIVE -> false
+            isParallelMode() -> canPlayerActParallelLocked(slot.player)
+            else -> slot.player == match.turnState.player
+        }
         PollResponse(ok = true, canAct = canAct, match = match)
     }
 
@@ -409,6 +470,17 @@ class HostGameManager(
         if (match.status != MatchStatus.ACTIVE) {
             return@synchronized GenericOkResponse(ok = false, error = "Match is not active.")
         }
+        if (isParallelMode()) {
+            return@synchronized publishParallelIntentLocked(
+                player = slot.player,
+                x = x,
+                y = y,
+                rotDeg = rotDeg,
+                meepleFeatureId = meepleFeatureId,
+                locked = locked,
+            )
+        }
+
         if (slot.player != match.turnState.player) {
             return@synchronized GenericOkResponse(ok = false, error = "It is not your turn.")
         }
@@ -435,6 +507,23 @@ class HostGameManager(
         cleanupInvitesLocked()
         val slot = playerByToken(token)
             ?: return@synchronized GenericOkResponse(ok = false, error = "Invalid session token.")
+        if (isParallelMode()) {
+            val round = match.parallelRound ?: return@synchronized GenericOkResponse(ok = false, error = "Parallel round not initialized.")
+            val playerState = round.players[slot.player] ?: return@synchronized GenericOkResponse(ok = false, error = "Player is not part of this round.")
+            if (playerState.tileLocked) {
+                return@synchronized GenericOkResponse(ok = false, error = "Placement already locked.")
+            }
+            val players = round.players.toMutableMap()
+            players[slot.player] = playerState.copy(intent = null)
+            val intents = match.parallelIntents.toMutableMap()
+            intents.remove(slot.player)
+            match = match.copy(
+                parallelRound = round.copy(players = players),
+                parallelIntents = intents,
+                updatedAtEpochMs = nowMs(),
+            )
+            return@synchronized GenericOkResponse(ok = true)
+        }
         clearIntentForPlayerLocked(slot.player)
         GenericOkResponse(ok = true)
     }
@@ -451,6 +540,13 @@ class HostGameManager(
             ?: return@synchronized SubmitTurnResponse(ok = false, error = "Invalid session token.")
         if (match.status != MatchStatus.ACTIVE) {
             return@synchronized SubmitTurnResponse(ok = false, error = "Match is not active.")
+        }
+
+        if (isParallelMode()) {
+            return@synchronized submitParallelMeepleLocked(
+                player = slot.player,
+                meepleFeatureId = meepleFeatureId,
+            )
         }
 
         if (slot.player != match.turnState.player) {
@@ -528,7 +624,7 @@ class HostGameManager(
 
         recomputeAndScore()
         val completedMoves = match.turnState.turnIndex
-        if (match.rules.randomizedMode && completedMoves >= match.rules.randomizedMoveLimit) {
+        if (isRandomizedMode(match.rules) && completedMoves >= match.rules.randomizedMoveLimit) {
             finalizeMatch()
             return SubmitTurnResponse(ok = true, match = match)
         }
@@ -554,6 +650,30 @@ class HostGameManager(
         drawPlaceableTileForTurn()
 
         SubmitTurnResponse(ok = true, match = match)
+    }
+
+    fun parallelPickTile(token: String, pickIndex: Int): SubmitTurnResponse = synchronized(lock) {
+        cleanupInvitesLocked()
+        val slot = playerByToken(token)
+            ?: return@synchronized SubmitTurnResponse(ok = false, error = "Invalid session token.")
+        if (!isParallelMode() || match.status != MatchStatus.ACTIVE) {
+            return@synchronized SubmitTurnResponse(ok = false, error = "Parallel mode is not active.")
+        }
+        val out = pickParallelTileLocked(player = slot.player, pickIndex = pickIndex)
+        if (!out.ok) return@synchronized out
+        return@synchronized SubmitTurnResponse(ok = true, match = match)
+    }
+
+    fun parallelResolveConflict(token: String, actionRaw: String): SubmitTurnResponse = synchronized(lock) {
+        cleanupInvitesLocked()
+        val slot = playerByToken(token)
+            ?: return@synchronized SubmitTurnResponse(ok = false, error = "Invalid session token.")
+        if (!isParallelMode() || match.status != MatchStatus.ACTIVE) {
+            return@synchronized SubmitTurnResponse(ok = false, error = "Parallel mode is not active.")
+        }
+        val out = resolveParallelConflictLocked(player = slot.player, actionRaw = actionRaw)
+        if (!out.ok) return@synchronized out
+        return@synchronized SubmitTurnResponse(ok = true, match = match)
     }
 
     fun removeToken(token: String): GenericOkResponse = synchronized(lock) {
@@ -615,6 +735,9 @@ class HostGameManager(
             turnState = TurnState(player = listOf(1, 2).random(random), tileId = null, turnIndex = 1),
             nextTiles = mapOf(1 to null, 2 to null),
             drawQueue = drawQueue,
+            priorityTokenPlayer = if (rules.gameMode == GameMode.PARALLEL) listOf(1, 2).random(random) else null,
+            parallelRound = null,
+            parallelIntents = emptyMap(),
             createdAtEpochMs = now,
             updatedAtEpochMs = now,
             lastEvent = "Waiting for opponent.",
@@ -798,13 +921,14 @@ class HostGameManager(
             score = score,
             turnState = match.turnState.copy(tileId = null, burnedTiles = emptyList(), intent = null),
             nextTiles = mapOf(1 to null, 2 to null),
+            parallelIntents = emptyMap(),
             lastEvent = event,
             updatedAtEpochMs = nowMs(),
         )
     }
 
     private fun ensureNextTiles() {
-        if (match.status != MatchStatus.ACTIVE) return
+        if (match.status != MatchStatus.ACTIVE || isParallelMode()) return
         val nextTiles = match.nextTiles.toMutableMap()
         val remaining = match.remaining.toMutableMap()
         val drawQueue = ArrayDeque(
@@ -815,7 +939,7 @@ class HostGameManager(
             )
         )
         val turnPlayer = match.turnState.player
-        val randomizedMode = match.rules.randomizedMode
+        val randomizedMode = isRandomizedMode(match.rules)
         for (player in activePlayersLocked()) {
             if (player == turnPlayer) continue
             if (nextTiles[player] != null) continue
@@ -837,6 +961,7 @@ class HostGameManager(
     }
 
     private fun drawPlaceableTileForTurn() {
+        if (isParallelMode()) return
         val burned = mutableListOf<String>()
         val turnPlayer = match.turnState.player
         val nextTiles = match.nextTiles.toMutableMap()
@@ -848,7 +973,7 @@ class HostGameManager(
                 remaining = remaining,
             )
         )
-        val randomized = match.rules.randomizedMode
+        val randomized = isRandomizedMode(match.rules)
 
         if (randomized && !hasAnyPlaceableTileInBasePool(match.board)) {
             match = match.copy(
@@ -945,7 +1070,7 @@ class HostGameManager(
         rules: GameRules,
         remaining: Map<String, Int>,
     ): List<String> {
-        if (rules.randomizedMode) {
+        if (isRandomizedMode(rules) || rules.gameMode == GameMode.PARALLEL) {
             val queue = ArrayDeque(existing.filter { it.isNotBlank() })
             refillRandomizedDrawQueue(queue, RANDOM_QUEUE_TARGET)
             return queue.toList()
@@ -998,13 +1123,24 @@ class HostGameManager(
     }
 
     private fun normalizeRules(input: GameRules): GameRules {
+        val mode = when {
+            input.gameMode == GameMode.PARALLEL -> GameMode.PARALLEL
+            input.gameMode == GameMode.RANDOM || input.randomizedMode -> GameMode.RANDOM
+            else -> GameMode.STANDARD
+        }
         val meeples = input.meeplesPerPlayer.coerceIn(1, 20)
-        val limit = input.randomizedMoveLimit.coerceIn(1, 500)
+        val randomLimit = input.randomizedMoveLimit.coerceIn(1, 500)
         val previewCount = input.previewCount.coerceIn(1, 20)
+        val parallelSelectionSize = input.parallelSelectionSize.coerceIn(1, 6)
+        val parallelMoveLimit = input.parallelMoveLimit.coerceIn(1, 500)
         return input.copy(
+            gameMode = mode,
             meeplesPerPlayer = meeples,
-            randomizedMoveLimit = limit,
+            randomizedMode = mode == GameMode.RANDOM,
+            randomizedMoveLimit = randomLimit,
             previewCount = previewCount,
+            parallelSelectionSize = parallelSelectionSize,
+            parallelMoveLimit = parallelMoveLimit,
         )
     }
 
@@ -1029,12 +1165,592 @@ class HostGameManager(
     }
 
     private fun clearIntentForPlayerLocked(player: Int) {
+        if (isParallelMode()) {
+            val round = match.parallelRound ?: return
+            val playerState = round.players[player] ?: return
+            if (playerState.tileLocked) return
+            val players = round.players.toMutableMap()
+            players[player] = playerState.copy(intent = null)
+            val intents = match.parallelIntents.toMutableMap()
+            intents.remove(player)
+            match = match.copy(
+                parallelRound = round.copy(players = players),
+                parallelIntents = intents,
+                updatedAtEpochMs = nowMs(),
+            )
+            return
+        }
         val intent = match.turnState.intent ?: return
         if (intent.player != player) return
         match = match.copy(
             turnState = match.turnState.copy(intent = null),
             updatedAtEpochMs = nowMs(),
         )
+    }
+
+    private fun normalizeParallelRound(
+        saved: ParallelRoundState?,
+        restored: MatchState,
+        rules: GameRules,
+    ): ParallelRoundState? {
+        if (restored.status != MatchStatus.ACTIVE) return null
+        val activePlayers = if (restored.players[2] == null) listOf(1) else listOf(1, 2)
+        val seed = saved ?: ParallelRoundState(
+            roundIndex = 1,
+            moveLimit = rules.parallelMoveLimit,
+            selection = emptyList(),
+            phase = ParallelPhase.PICK,
+            players = emptyMap(),
+            conflict = null,
+            placementDoneAtEpochMs = 0L,
+        )
+        val players = activePlayers.associateWith { player ->
+            seed.players[player] ?: ParallelPlayerRoundState()
+        }
+        val selection = seed.selection
+            .filter { it.isNotBlank() }
+            .let { current ->
+                if (current.size >= rules.parallelSelectionSize) {
+                    current.take(rules.parallelSelectionSize)
+                } else {
+                    (
+                        current +
+                            buildParallelSelectionForBoard(
+                                board = restored.board,
+                                size = rules.parallelSelectionSize - current.size,
+                            )
+                    ).take(rules.parallelSelectionSize)
+                }
+            }
+        return seed.copy(
+            moveLimit = rules.parallelMoveLimit,
+            selection = selection,
+            players = players,
+        )
+    }
+
+    private fun canPlayerActParallelLocked(player: Int): Boolean {
+        val round = match.parallelRound ?: return false
+        val playerState = round.players[player] ?: return false
+        if (player !in activePlayersLocked()) return false
+        return when (round.phase) {
+            ParallelPhase.PICK -> playerState.pickedTileId == null || !playerState.tileLocked
+            ParallelPhase.PLACE -> {
+                if (round.conflict != null) {
+                    false
+                } else {
+                    playerState.pickedTileId == null || !playerState.tileLocked
+                }
+            }
+            ParallelPhase.RESOLVE -> round.conflict?.tokenHolder == player
+            ParallelPhase.MEEPLE -> !playerState.meepleConfirmed
+        }
+    }
+
+    private fun startParallelRoundLocked(roundIndex: Int) {
+        val rules = match.rules
+        val moveLimit = rules.parallelMoveLimit
+        if (roundIndex > moveLimit) {
+            finalizeMatch()
+            return
+        }
+        if (!hasAnyPlaceableTileInBasePool(match.board)) {
+            finalizeMatch()
+            return
+        }
+        val activePlayers = activePlayersLocked()
+        val selection = buildParallelSelectionLocked(rules.parallelSelectionSize)
+        val players = activePlayers.associateWith { ParallelPlayerRoundState() }
+        val tokenHolder = match.priorityTokenPlayer ?: activePlayers.firstOrNull() ?: 1
+        match = match.copy(
+            priorityTokenPlayer = tokenHolder,
+            parallelRound = ParallelRoundState(
+                roundIndex = roundIndex,
+                moveLimit = moveLimit,
+                selection = selection,
+                phase = ParallelPhase.PICK,
+                players = players,
+                conflict = null,
+                placementDoneAtEpochMs = 0L,
+            ),
+            parallelIntents = emptyMap(),
+            turnState = match.turnState.copy(
+                player = tokenHolder,
+                tileId = null,
+                burnedTiles = emptyList(),
+                turnIndex = roundIndex,
+                intent = null,
+            ),
+            nextTiles = mapOf(1 to null, 2 to null),
+            lastEvent = "Round $roundIndex: pick a tile.",
+            updatedAtEpochMs = nowMs(),
+        )
+    }
+
+    private fun buildParallelSelectionLocked(size: Int): List<String> {
+        return buildParallelSelectionForBoard(board = match.board, size = size)
+    }
+
+    private fun buildParallelSelectionForBoard(
+        board: Map<String, PlacedTile>,
+        size: Int,
+    ): List<String> {
+        val target = size.coerceIn(1, 6)
+        val out = mutableListOf<String>()
+        var attempts = 0
+        val maxAttempts = MAX_RANDOM_DRAW_ATTEMPTS * target
+        while (out.size < target && attempts < maxAttempts) {
+            attempts++
+            val tile = drawWeightedTileFromBasePool() ?: break
+            if (!engine.hasAnyPlacement(board, tile)) continue
+            out += tile
+        }
+        if (out.isEmpty()) {
+            val fallback = engine.counts.keys.sorted().firstOrNull() ?: return emptyList()
+            return List(target) { fallback }
+        }
+        while (out.size < target) {
+            out += out.random(random)
+        }
+        return out
+    }
+
+    private fun pickParallelTileLocked(player: Int, pickIndex: Int): SubmitTurnResponse {
+        val round = match.parallelRound ?: return SubmitTurnResponse(ok = false, error = "Parallel round not initialized.")
+        if (round.phase !in setOf(ParallelPhase.PICK, ParallelPhase.PLACE)) {
+            return SubmitTurnResponse(ok = false, error = "Tile pick is not available in this phase.")
+        }
+        val playerState = round.players[player]
+            ?: return SubmitTurnResponse(ok = false, error = "Player is not part of this round.")
+        if (playerState.tileLocked) {
+            return SubmitTurnResponse(ok = false, error = "Tile already locked.")
+        }
+        val selection = round.selection
+        if (pickIndex !in selection.indices) {
+            return SubmitTurnResponse(ok = false, error = "Invalid tile index.")
+        }
+        val tileId = selection[pickIndex]
+        val firstIntent = firstLegalParallelIntentLocked(player = player, tileId = tileId)
+            ?: return SubmitTurnResponse(ok = false, error = "Selected tile has no legal placement.")
+
+        val players = round.players.toMutableMap()
+        players[player] = playerState.copy(
+            pickIndex = pickIndex,
+            pickedTileId = tileId,
+            intent = firstIntent,
+            tileLocked = false,
+            committedCellKey = null,
+            committedRotDeg = null,
+            committedInstId = null,
+            meepleFeatureId = null,
+            meepleConfirmed = false,
+        )
+        val intents = match.parallelIntents.toMutableMap()
+        intents[player] = firstIntent
+
+        var nextRound = round.copy(
+            players = players,
+            conflict = null,
+        )
+        if (nextRound.phase == ParallelPhase.PICK) {
+            val allPicked = activePlayersLocked().all { p -> !players[p]?.pickedTileId.isNullOrBlank() }
+            if (allPicked) {
+                nextRound = nextRound.copy(phase = ParallelPhase.PLACE)
+            }
+        }
+        match = match.copy(
+            parallelRound = nextRound,
+            parallelIntents = intents,
+            lastEvent = if (nextRound.phase == ParallelPhase.PLACE) {
+                "All players picked. Place and long-press to lock."
+            } else {
+                "Tile picked: $tileId."
+            },
+            updatedAtEpochMs = nowMs(),
+        )
+        if (nextRound.phase == ParallelPhase.PLACE) {
+            evaluateParallelPlacementLocked()
+        }
+        return SubmitTurnResponse(ok = true, match = match)
+    }
+
+    private fun firstLegalParallelIntentLocked(player: Int, tileId: String): TurnIntentState? {
+        val frontier = engine.buildFrontier(match.board)
+            .sortedWith(
+                compareBy<Pair<Int, Int>> { kotlin.math.abs(it.first) + kotlin.math.abs(it.second) }
+                    .thenBy { kotlin.math.abs(it.second) }
+                    .thenBy { kotlin.math.abs(it.first) }
+                    .thenBy { it.second }
+                    .thenBy { it.first },
+            )
+        for ((x, y) in frontier) {
+            for (rot in listOf(0, 90, 180, 270)) {
+                val legal = engine.canPlaceAt(match.board, tileId, rot, x, y)
+                if (legal.ok) {
+                    return TurnIntentState(
+                        player = player,
+                        tileId = tileId,
+                        x = x,
+                        y = y,
+                        rotDeg = rot,
+                        meepleFeatureId = null,
+                        locked = false,
+                        updatedAtEpochMs = nowMs(),
+                    )
+                }
+            }
+        }
+        return null
+    }
+
+    private fun publishParallelIntentLocked(
+        player: Int,
+        x: Int,
+        y: Int,
+        rotDeg: Int,
+        meepleFeatureId: String?,
+        locked: Boolean,
+    ): GenericOkResponse {
+        val round = match.parallelRound ?: return GenericOkResponse(ok = false, error = "Parallel round not initialized.")
+        if (round.phase !in setOf(ParallelPhase.PICK, ParallelPhase.PLACE)) {
+            return GenericOkResponse(ok = false, error = "Placement phase is not active.")
+        }
+        val playerState = round.players[player]
+            ?: return GenericOkResponse(ok = false, error = "Player is not part of this round.")
+        if (playerState.tileLocked) {
+            return GenericOkResponse(ok = false, error = "Placement already locked.")
+        }
+        val tileId = playerState.pickedTileId
+            ?: return GenericOkResponse(ok = false, error = "Pick a tile first.")
+        val normalizedRot = normalizeRot(rotDeg)
+        val legal = engine.canPlaceAt(match.board, tileId, normalizedRot, x, y)
+        if (locked && !legal.ok) {
+            return GenericOkResponse(ok = false, error = legal.reason)
+        }
+        val intent = TurnIntentState(
+            player = player,
+            tileId = tileId,
+            x = x,
+            y = y,
+            rotDeg = normalizedRot,
+            meepleFeatureId = meepleFeatureId?.trim().orEmpty().ifBlank { null },
+            locked = locked,
+            updatedAtEpochMs = nowMs(),
+        )
+        val players = round.players.toMutableMap()
+        players[player] = playerState.copy(
+            intent = intent,
+            tileLocked = locked,
+        )
+        val intents = match.parallelIntents.toMutableMap()
+        intents[player] = intent
+        match = match.copy(
+            parallelRound = round.copy(players = players),
+            parallelIntents = intents,
+            updatedAtEpochMs = nowMs(),
+        )
+        if (locked) {
+            evaluateParallelPlacementLocked()
+        }
+        return GenericOkResponse(ok = true)
+    }
+
+    private fun evaluateParallelPlacementLocked() {
+        val round = match.parallelRound ?: return
+        if (round.phase != ParallelPhase.PLACE) return
+        val activePlayers = activePlayersLocked()
+        if (activePlayers.any { player ->
+                val state = round.players[player]
+                state?.tileLocked != true || state.intent == null
+            }
+        ) {
+            return
+        }
+        val intents = activePlayers.associateWith { player ->
+            round.players[player]?.intent ?: return
+        }
+        val conflict = detectParallelConflictLocked(intents)
+        if (conflict != null) {
+            val holder = match.priorityTokenPlayer
+                ?.takeIf { it in activePlayers }
+                ?: activePlayers.first()
+            val fixed = activePlayers.firstOrNull { it != holder } ?: holder
+            val conflictState = ParallelConflictState(
+                type = conflict,
+                tokenHolder = holder,
+                fixedPlayer = fixed,
+                replacerPlayer = holder,
+                message = if (conflict == ParallelConflictType.SAME_CELL) {
+                    "Conflict: both tiles target the same cell."
+                } else {
+                    "Conflict: tile edges mismatch between both placements."
+                },
+            )
+            match = match.copy(
+                parallelRound = round.copy(
+                    phase = ParallelPhase.RESOLVE,
+                    conflict = conflictState,
+                ),
+                lastEvent = "${match.players[holder]?.name ?: "Token holder"}: choose Burn Token or Retreat.",
+                updatedAtEpochMs = nowMs(),
+            )
+            return
+        }
+        commitParallelPlacementsLocked()
+    }
+
+    private fun detectParallelConflictLocked(
+        intents: Map<Int, TurnIntentState>,
+    ): ParallelConflictType? {
+        if (intents.size <= 1) return null
+        val orderedPlayers = intents.keys.sorted()
+        for (i in orderedPlayers.indices) {
+            for (j in i + 1 until orderedPlayers.size) {
+                val a = intents[orderedPlayers[i]] ?: continue
+                val b = intents[orderedPlayers[j]] ?: continue
+                if (a.x == b.x && a.y == b.y) {
+                    return ParallelConflictType.SAME_CELL
+                }
+                val dx = b.x - a.x
+                val dy = b.y - a.y
+                if (kotlin.math.abs(dx) + kotlin.math.abs(dy) != 1) continue
+                val edgeA = when {
+                    dx == 1 -> "E"
+                    dx == -1 -> "W"
+                    dy == 1 -> "S"
+                    else -> "N"
+                }
+                val edgeB = when (edgeA) {
+                    "N" -> "S"
+                    "S" -> "N"
+                    "E" -> "W"
+                    else -> "E"
+                }
+                val tileA = engine.rotateTile(a.tileId, a.rotDeg)
+                val tileB = engine.rotateTile(b.tileId, b.rotDeg)
+                val primaryA = tileA.edges[edgeA]?.primary
+                val primaryB = tileB.edges[edgeB]?.primary
+                if (primaryA != primaryB) {
+                    return ParallelConflictType.EDGE_MISMATCH
+                }
+            }
+        }
+        return null
+    }
+
+    private fun resolveParallelConflictLocked(player: Int, actionRaw: String): SubmitTurnResponse {
+        val round = match.parallelRound ?: return SubmitTurnResponse(ok = false, error = "Parallel round not initialized.")
+        if (round.phase != ParallelPhase.RESOLVE) {
+            return SubmitTurnResponse(ok = false, error = "No conflict to resolve.")
+        }
+        val conflict = round.conflict ?: return SubmitTurnResponse(ok = false, error = "No conflict to resolve.")
+        if (conflict.tokenHolder != player) {
+            return SubmitTurnResponse(ok = false, error = "Only priority token holder can resolve conflict.")
+        }
+        val activePlayers = activePlayersLocked()
+        val other = activePlayers.firstOrNull { it != player } ?: player
+        val action = actionRaw.trim().lowercase()
+        val nextHolder: Int
+        val replacer: Int
+        val fixed: Int
+        val event: String
+        when (action) {
+            "retreat", "replace" -> {
+                nextHolder = player
+                replacer = player
+                fixed = other
+                event = "${match.players[player]?.name ?: "Player"} kept priority and must place in another place."
+            }
+            "burn", "burn_token", "burn-token" -> {
+                nextHolder = other
+                replacer = other
+                fixed = player
+                event = "${match.players[player]?.name ?: "Player"} burned priority. ${match.players[other]?.name ?: "Opponent"} must place in another place."
+            }
+            else -> return SubmitTurnResponse(ok = false, error = "Invalid action. Use retreat or burn.")
+        }
+        val players = round.players.toMutableMap()
+        val replacerState = players[replacer] ?: ParallelPlayerRoundState()
+        val unlockedIntent = replacerState.intent?.copy(
+            locked = false,
+            updatedAtEpochMs = nowMs(),
+        )
+        players[replacer] = replacerState.copy(
+            intent = unlockedIntent,
+            tileLocked = false,
+            committedCellKey = null,
+            committedRotDeg = null,
+            committedInstId = null,
+            meepleFeatureId = null,
+            meepleConfirmed = false,
+        )
+        val intents = match.parallelIntents.toMutableMap()
+        if (unlockedIntent != null) {
+            intents[replacer] = unlockedIntent
+        } else {
+            intents.remove(replacer)
+        }
+        val fixedState = players[fixed]
+        if (fixedState != null && fixedState.intent != null) {
+            intents[fixed] = fixedState.intent
+        }
+        match = match.copy(
+            priorityTokenPlayer = nextHolder,
+            parallelRound = round.copy(
+                phase = ParallelPhase.PLACE,
+                conflict = null,
+                players = players,
+            ),
+            parallelIntents = intents,
+            lastEvent = event,
+            updatedAtEpochMs = nowMs(),
+        )
+        return SubmitTurnResponse(ok = true, match = match)
+    }
+
+    private fun commitParallelPlacementsLocked() {
+        val round = match.parallelRound ?: return
+        val activePlayers = activePlayersLocked()
+        val players = round.players.toMutableMap()
+        val board = match.board.toMutableMap()
+        var instSeq = match.instSeq
+        for (player in activePlayers.sorted()) {
+            val state = players[player] ?: continue
+            val intent = state.intent ?: continue
+            val cellKey = engine.keyXY(intent.x, intent.y)
+            if (board.containsKey(cellKey)) {
+                return
+            }
+            board[cellKey] = PlacedTile(
+                instId = instSeq,
+                tileId = intent.tileId,
+                rotDeg = intent.rotDeg,
+                meeples = emptyList(),
+            )
+            players[player] = state.copy(
+                committedCellKey = cellKey,
+                committedRotDeg = intent.rotDeg,
+                committedInstId = instSeq,
+                meepleFeatureId = null,
+                meepleConfirmed = false,
+            )
+            instSeq += 1
+        }
+        match = match.copy(
+            board = board,
+            instSeq = instSeq,
+            parallelRound = round.copy(
+                phase = ParallelPhase.MEEPLE,
+                players = players,
+                conflict = null,
+                placementDoneAtEpochMs = nowMs(),
+            ),
+            parallelIntents = emptyMap(),
+            turnState = match.turnState.copy(intent = null),
+            lastEvent = "Placement done.",
+            updatedAtEpochMs = nowMs(),
+        )
+    }
+
+    private fun submitParallelMeepleLocked(
+        player: Int,
+        meepleFeatureId: String?,
+    ): SubmitTurnResponse {
+        val round = match.parallelRound ?: return SubmitTurnResponse(ok = false, error = "Parallel round not initialized.")
+        if (round.phase != ParallelPhase.MEEPLE) {
+            return SubmitTurnResponse(ok = false, error = "Meeple phase is not active.")
+        }
+        val playerState = round.players[player]
+            ?: return SubmitTurnResponse(ok = false, error = "Player is not part of this round.")
+        if (playerState.meepleConfirmed) {
+            return SubmitTurnResponse(ok = false, error = "Meeple already confirmed.")
+        }
+        val committedCellKey = playerState.committedCellKey
+            ?: return SubmitTurnResponse(ok = false, error = "Tile placement is not committed.")
+        val committedRot = playerState.committedRotDeg
+            ?: return SubmitTurnResponse(ok = false, error = "Tile placement is not committed.")
+        val committedInst = playerState.committedInstId
+            ?: return SubmitTurnResponse(ok = false, error = "Tile placement is not committed.")
+        val inst = match.board[committedCellKey]
+            ?: return SubmitTurnResponse(ok = false, error = "Committed tile not found.")
+        val selectedFeature = meepleFeatureId?.trim().orEmpty().ifBlank { null }
+        if (selectedFeature != null) {
+            val left = match.meeplesAvailable[player] ?: 0
+            if (left <= 0) {
+                return SubmitTurnResponse(ok = false, error = "No meeples remaining.")
+            }
+            val rotated = engine.rotateTile(inst.tileId, committedRot)
+            val feature = rotated.features.firstOrNull { it.id == selectedFeature }
+                ?: return SubmitTurnResponse(ok = false, error = "Invalid meeple feature id.")
+            if (feature.type !in listOf("road", "city", "field", "cloister")) {
+                return SubmitTurnResponse(ok = false, error = "Meeple cannot be placed on that feature.")
+            }
+            val analysis = engine.analyzeBoard(match.board)
+            val nodeKey = "$committedInst:$selectedFeature"
+            if (!analysis.nodeMeta.containsKey(nodeKey)) {
+                return SubmitTurnResponse(ok = false, error = "Invalid feature selection.")
+            }
+            val group = analysis.groups[analysis.uf.find(nodeKey)]
+            val occupied = group?.let {
+                (it.meeplesByPlayer[1] ?: 0) + (it.meeplesByPlayer[2] ?: 0)
+            } ?: 0
+            if (occupied > 0) {
+                return SubmitTurnResponse(ok = false, error = "Meeple rule: that connected feature is occupied.")
+            }
+        }
+        val players = round.players.toMutableMap()
+        players[player] = playerState.copy(
+            meepleFeatureId = selectedFeature,
+            meepleConfirmed = true,
+        )
+        match = match.copy(
+            parallelRound = round.copy(players = players),
+            updatedAtEpochMs = nowMs(),
+        )
+
+        val allConfirmed = activePlayersLocked().all { p -> players[p]?.meepleConfirmed == true }
+        if (allConfirmed) {
+            applyParallelMeeplesAndAdvanceLocked()
+        } else {
+            match = match.copy(
+                lastEvent = "${match.players[player]?.name ?: "Player"} confirmed meeple.",
+                updatedAtEpochMs = nowMs(),
+            )
+        }
+        return SubmitTurnResponse(ok = true, match = match)
+    }
+
+    private fun applyParallelMeeplesAndAdvanceLocked() {
+        val round = match.parallelRound ?: return
+        val activePlayers = activePlayersLocked()
+        val players = round.players
+        val board = match.board.toMutableMap()
+        val meeplesAvailable = match.meeplesAvailable.toMutableMap()
+        for (player in activePlayers.sorted()) {
+            val state = players[player] ?: continue
+            val cellKey = state.committedCellKey ?: continue
+            val selected = state.meepleFeatureId ?: continue
+            val inst = board[cellKey] ?: continue
+            board[cellKey] = inst.copy(
+                meeples = inst.meeples + MeeplePlacement(
+                    player = player,
+                    featureLocalId = selected,
+                ),
+            )
+            meeplesAvailable[player] = ((meeplesAvailable[player] ?: 0) - 1).coerceAtLeast(0)
+        }
+        match = match.copy(
+            board = board,
+            meeplesAvailable = meeplesAvailable,
+            updatedAtEpochMs = nowMs(),
+        )
+        recomputeAndScore()
+
+        if (round.roundIndex >= round.moveLimit) {
+            finalizeMatch()
+            return
+        }
+        startParallelRoundLocked(round.roundIndex + 1)
     }
 
     private fun normalizeRot(raw: Int): Int {
